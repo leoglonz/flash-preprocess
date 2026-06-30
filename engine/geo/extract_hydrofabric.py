@@ -1,6 +1,6 @@
 """Extract and subset the CONUS NextGen HydroFabric for flash-flood event sims.
 
-Reads divide IDs from 15-min MRMS NetCDF files (or an explicit list), then
+Reads divide IDs from a CSV column (or an explicit list), then
 subsets HydroFabric to those catchments plus their full upstream
 network, derives the river topology DAG, locates USGS gages within the region,
 and writes everything needed for dMG runtime
@@ -21,11 +21,8 @@ Outputs (written to --output-dir):
 
 Usage
 -----
-    # From 15-min NC files (divide ID auto-detected)
-    python extract_hydrofabric.py \\
-        --nc-dir ../data/forcing_15min_huc8_all_upstream \\
-        --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg \\
-        --output-dir ../data/hydrofabric_subset
+    # From a CSV column (e.g. gage_divide_id)
+    python extract_hydrofabric.py --csv /Users/leoglonz/Desktop/noaa/data/huc8_03020201_events_and_gages.csv --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg --output-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse
 
     # From an explicit list of divide IDs
     python extract_hydrofabric.py \\
@@ -43,9 +40,13 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import xarray as xr
+
+from flash_preprocess.utils import build_upstream_graph, expand_upstream
 
 log = logging.getLogger('ExtractHF')
+
+
+DEFAULT_COLUMN_DIVIDE_ID = 'gage_divide_id'
 
 
 def _cat_to_int(cat_id: str) -> int:
@@ -58,44 +59,37 @@ def _int_to_cat(n: int) -> str:
     return f'cat-{n}'
 
 
-def collect_divide_ids_from_nc(nc_dir: Path) -> list[str]:
-    """Return sorted unique divide_ids found across all NC files in nc_dir.
-    
+def collect_divide_ids_from_csv(csv_path: Path, column: str) -> list[str]:
+    """Return sorted unique divide_ids found in a CSV column.
+
     Parameters
     ----------
-    nc_dir
-        Directory containing 15-min MRMS NetCDF files with 'divide_id' coordinate.
-    
+    csv_path
+        Path to a CSV file containing a column of divide IDs.
+    column
+        Name of the column holding divide IDs (cat-XXXXX strings).
+
     Returns
     -------
     list[str]
-        List of unique divide IDs (cat-XXXXX strings) found in the NC files.
+        Sorted list of unique divide IDs found in the column.
     """
-    ids: set[str] = set()
-    files = list(nc_dir.glob('*.nc'))
-    if not files:
-        raise FileNotFoundError(f'No .nc files found in {nc_dir}')
-    for f in files:
-        ds = xr.open_dataset(f)
-        if 'divide_id' in ds.coords:
-            ids.update(ds['divide_id'].values.tolist())
-        elif 'divide_id' in ds.data_vars:
-            ids.update(ds['divide_id'].values.tolist())
-        ds.close()
-    log.info('Found %d unique divide IDs across %d NC files', len(ids), len(files))
+    df = pd.read_csv(csv_path, usecols=[column])
+    ids = set(df[column].dropna().tolist())
+    log.info('Found %d unique divide IDs in %s[%s]', len(ids), csv_path, column)
     return sorted(ids)
 
 
 def build_full_upstream_network(
-    conn: sqlite3.Connection,
+    hf_path: str,
     divide_ids: list[str],
 ) -> tuple[set[int], list[tuple[int, int]]]:
     """Walk upstream from divides and return all reachable nodes and edges.
 
     Parameters
     ----------
-    conn
-        Open SQLite connection to the hydrofabric GeoPackage.
+    hf_path
+        Path to the hydrofabric GeoPackage.
     divide_ids
         List of divide IDs (cat-XXXXX strings) to start from.
 
@@ -106,56 +100,27 @@ def build_full_upstream_network(
     list[tuple[int, int]]
         List of (upstream_int, downstream_int) tuples representing flow direction.
     """
-    # Build the full DAG from the network table in one shot, then do BFS.
-    # Each row: wb-A -> nex-X -> wb-B  == cat-A flows to cat-B.
-    log.info('Loading network topology from GeoPackage ...')
-    # some sql nastiness
-    rows = conn.execute(
-        """
-        SELECT DISTINCT
-            CAST(SUBSTR(w_up.id, 4) AS INTEGER)  AS up_id,
-            CAST(SUBSTR(w_dn.id, 4) AS INTEGER)  AS dn_id
-        FROM   network w_up
-        JOIN   network nex ON w_up.toid = nex.id
-        JOIN   network w_dn ON nex.toid = w_dn.id
-        WHERE  w_up.id  LIKE 'wb-%'
-          AND  nex.id   LIKE 'nex-%'
-          AND  w_dn.id  LIKE 'wb-%'
-        """
-    ).fetchall()
+    # graph: downstream divide_id -> [upstream divide_ids], joined directly
+    # via divides/nexus/flowpaths instead of a LIKE-filtered self-join on
+    # the much larger denormalized `network` table.
+    graph = build_upstream_graph(hf_path)
+    visited = expand_upstream(divide_ids, graph)
 
-    # adjacency: downstream[node] = set of direct downstream nodes
-    downstream: dict[int, set[int]] = {}
-    # reverse adjacency for BFS upstream
-    upstream: dict[int, set[int]] = {}
-    all_edge_set: set[tuple[int, int]] = set()
-    for up_id, dn_id in rows:
-        downstream.setdefault(up_id, set()).add(dn_id)
-        upstream.setdefault(dn_id, set()).add(up_id)
-        all_edge_set.add((up_id, dn_id))
-
-    # BFS: start from seeds, walk *upstream* to find the full contributing area.
-    seeds = {_cat_to_int(d) for d in divide_ids}
-    visited: set[int] = set()
-    queue = list(seeds)
-    while queue:
-        node = queue.pop()
-        if node in visited:
-            continue
-        visited.add(node)
-        for parent in upstream.get(node, []):
-            if parent not in visited:
-                queue.append(parent)
-
-    # Keep only edges within the subgraph.
-    subgraph_edges = [(u, d) for u, d in all_edge_set if u in visited and d in visited]
+    subgraph_edges = [
+        (_cat_to_int(up), _cat_to_int(dn))
+        for dn, ups in graph.items()
+        if dn in visited
+        for up in ups
+        if up in visited
+    ]
+    nodes = {_cat_to_int(d) for d in visited}
     log.info(
         'Subgraph: %d nodes, %d edges (seeds: %d)',
-        len(visited),
+        len(nodes),
         len(subgraph_edges),
-        len(seeds),
+        len(divide_ids),
     )
-    return visited, subgraph_edges
+    return nodes, subgraph_edges
 
 
 def find_gages_in_region(
@@ -176,16 +141,25 @@ def find_gages_in_region(
     DataFrame
         columns: STAID, divide_id (int), DRAIN_SQKM.
     """
-    # hydrolocations.id = 'wb-XXXXX' for the waterbody the gage is at.
-    # Matches cat-XXXXX nodes in our set when the integer matches.
+    # Split the OR join into two indexed queries and UNION — a single JOIN with
+    # OR prevents SQLite from using any index, causing a full cross-scan.
     rows = conn.execute(
         """
-        SELECT h.hl_link                                  AS STAID,
-               CAST(SUBSTR(h.id, 4) AS INTEGER)          AS divide_id,
-               d.tot_drainage_areasqkm                   AS DRAIN_SQKM
+        SELECT h.hl_link                         AS STAID,
+               CAST(SUBSTR(h.id, 4) AS INTEGER)  AS divide_id,
+               d.tot_drainage_areasqkm           AS DRAIN_SQKM
         FROM   hydrolocations h
-        JOIN   divides d ON d.divide_id = h.nex_id OR
-                            'wb' || SUBSTR(d.divide_id, 4) = h.id
+        JOIN   divides d ON d.divide_id = h.nex_id
+        WHERE  h.hl_reference IN ('gages', 'usgs-gage')
+          AND  h.id LIKE 'wb-%'
+
+        UNION
+
+        SELECT h.hl_link,
+               CAST(SUBSTR(h.id, 4) AS INTEGER),
+               d.tot_drainage_areasqkm
+        FROM   hydrolocations h
+        JOIN   divides d ON 'wb' || SUBSTR(d.divide_id, 4) = h.id
         WHERE  h.hl_reference IN ('gages', 'usgs-gage')
           AND  h.id LIKE 'wb-%'
         """
@@ -195,43 +169,6 @@ def find_gages_in_region(
     df = df[df['divide_id'].isin(node_ids)].drop_duplicates('STAID').reset_index(drop=True)
     log.info('Found %d USGS gages in study region', len(df))
     return df
-
-
-def extract_divides_geodataframe(
-    conn: sqlite3.Connection,
-    node_ids: set[int],
-) -> gpd.GeoDataFrame:
-    """Read divide geometries and attributes for the given integer node IDs.
-    
-    Parameters
-    ----------
-    conn
-        Open SQLite connection to the hydrofabric GeoPackage.
-    node_ids
-        Integer divide IDs in the study subgraph.
-
-    Returns
-    -------
-    GeoDataFrame
-        Geometries and attributes for the given divide IDs.
-    """
-    cat_ids = [_int_to_cat(n) for n in sorted(node_ids)]
-
-    try:
-        gdf = gpd.read_file(
-            conn.execute('PRAGMA database_list').fetchone()[2],  # gpkg path
-            layer='divides',
-            where=f"divide_id IN ({','.join(repr(c) for c in cat_ids)})",
-        )
-    except Exception:
-        # Fallback: read all then filter (slower but safe)
-        gdf = gpd.read_file(
-            conn.execute('PRAGMA database_list').fetchone()[2],
-            layer='divides',
-        )
-        gdf = gdf[gdf['divide_id'].isin(set(cat_ids))].reset_index(drop=True)
-
-    return gdf
 
 
 def build_topology_json(
@@ -273,8 +210,9 @@ def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = parser.add_mutually_exclusive_group(required=True)
-    src.add_argument('--nc-dir', type=Path, help='Directory of 15-min MRMS NC files (divide_id coord auto-read)')
+    src.add_argument('--csv', type=Path, help='CSV file containing a column of divide IDs')
     src.add_argument('--divide-ids', nargs='+', metavar='cat-XXXXX', help='Explicit list of seed divide IDs')
+    parser.add_argument('--csv-column', default=DEFAULT_COLUMN_DIVIDE_ID, help="Column in --csv holding divide IDs (default: %(default)s)")
     parser.add_argument('--gpkg', type=Path, required=True, help='Path to conus_nextgen.gpkg')
     parser.add_argument('--output-dir', type=Path, required=True, help='Output directory')
     parser.add_argument('--upstream', action='store_true', default=True, help='Expand to full upstream network (default: on)')
@@ -284,8 +222,8 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # collect seed divide ids
-    if args.nc_dir:
-        seed_ids = collect_divide_ids_from_nc(args.nc_dir)
+    if args.csv:
+        seed_ids = collect_divide_ids_from_csv(args.csv, args.csv_column)
     else:
         seed_ids = args.divide_ids
 
@@ -295,7 +233,7 @@ def main():
 
     # build network subgraph
     if args.upstream:
-        nodes, edges = build_full_upstream_network(conn, seed_ids)
+        nodes, edges = build_full_upstream_network(str(args.gpkg), seed_ids)
     else:
         nodes = {_cat_to_int(d) for d in seed_ids}
         edges = []
