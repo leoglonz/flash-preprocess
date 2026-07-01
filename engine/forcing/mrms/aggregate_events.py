@@ -16,7 +16,7 @@ Usage:
     python engine/forcing/mrms/aggregate_events.py --input-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse/forcing_15min --output /Users/leoglonz/Desktop/noaa/data/upper_neuse/mrms_15min.nc
 
     # Filter to storms listed in a manifest CSV (column: storm_index):
-    python engine/forcing/mrms/aggregate_events.py --input-dir data/upper_neuse/forcing_15min --manifest /Users/leoglonz/Desktop/noaa/data/upper_neuse/events.csv --output /Users/leoglonz/Desktop/noaa/data/upper_neuse/mrms_15min.nc
+    python engine/forcing/mrms/aggregate_events.py --input-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse/forcing_15min --manifest /Users/leoglonz/Desktop/noaa/data/upper_neuse/events_original.csv --output /Users/leoglonz/Desktop/noaa/data/upper_neuse/mrms_15min.nc
 """
 
 import argparse
@@ -29,7 +29,7 @@ import netCDF4
 import numpy as np
 
 
-_FILE_PATTERN = "storm_*_15min.nc"
+_FILE_PATTERN = 'storm_*_15min.nc'
 _STORM_ID_RE = re.compile(r"storm_(\d+)_")
 
 
@@ -48,9 +48,9 @@ def _scan_files(input_dir: str, pattern: str, allowed_ids: set | None) -> list[d
         sid = int(m.group(1))
         if allowed_ids is not None and sid not in allowed_ids:
             continue
-        records.append({"path": p, "storm_id": sid})
+        records.append({'path': p, 'storm_id': sid})
 
-    records.sort(key=lambda r: r["storm_id"])
+    records.sort(key=lambda r: r['storm_id'])
     return records
 
 
@@ -68,11 +68,11 @@ def _read_meta(records: list[dict]) -> tuple[np.ndarray, int, np.ndarray]:
     catchments_ref = None
 
     for i, rec in enumerate(records):
-        ds = netCDF4.Dataset(rec["path"], "r")
-        n_steps_arr[i] = ds.dimensions["time"].size
-        event_starts[i] = float(ds.variables["time"][0])
+        ds = netCDF4.Dataset(rec['path'], "r")
+        n_steps_arr[i] = ds.dimensions['time'].size
+        event_starts[i] = float(ds.variables['time'][0])
 
-        cats = ds.variables["divide_id"][:]
+        cats = ds.variables['divide_id'][:]
         if catchments_ref is None:
             catchments_ref = np.array(cats, dtype=object)
         elif len(cats) != len(catchments_ref) or not np.array_equal(cats, catchments_ref):
@@ -149,33 +149,33 @@ def main():
     print(f"Events: {n_events}  |  max timesteps: {max_steps}  |  catchments: {n_catchments}")
 
     # read time units from first file
-    with netCDF4.Dataset(records[0]["path"], "r") as ds0:
-        time_units = getattr(ds0.variables["time"], "units", "minutes since 2000-01-01")
+    with netCDF4.Dataset(records[0]['path'], "r") as ds0:
+        time_units = getattr(ds0.variables['time'], 'units', 'minutes since 2000-01-01')
 
     # create output
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     print(f"Writing {args.output} ...")
-    nc_out = netCDF4.Dataset(args.output, "w", format="NETCDF4")
+    nc_out = netCDF4.Dataset(args.output, 'w', format='NETCDF4')
 
-    nc_out.createDimension("event", n_events)
-    nc_out.createDimension("time_step", max_steps)
-    nc_out.createDimension("catchment", n_catchments)
+    nc_out.createDimension('event', n_events)
+    nc_out.createDimension('time_step', max_steps)
+    nc_out.createDimension('catchment', n_catchments)
 
     # coordinates
-    v_sid = nc_out.createVariable("storm_id", "i4", ("event",))
-    v_sid.long_name = "storm index"
-    v_sid[:] = np.array([r["storm_id"] for r in records], dtype=np.int32)
+    v_sid = nc_out.createVariable('storm_id', 'i4', ('event',))
+    v_sid.long_name = 'storm index'
+    v_sid[:] = np.array([r['storm_id'] for r in records], dtype=np.int32)
 
-    v_ns = nc_out.createVariable("n_steps", "i4", ("event",))
+    v_ns = nc_out.createVariable('n_steps', 'i4', ('event',))
     v_ns.long_name = "number of valid 15-min timesteps in this event"
     v_ns[:] = n_steps_arr
 
-    v_es = nc_out.createVariable("event_start", "f8", ("event",))
+    v_es = nc_out.createVariable('event_start', 'f8', ('event',))
     v_es.units = time_units
     v_es.long_name = "time of first timestep (step 0) for each event"
     v_es[:] = event_starts
 
-    v_cat = nc_out.createVariable("divide_id", str, ("catchment",))
+    v_cat = nc_out.createVariable('divide_id', str, ('catchment',))
     v_cat.long_name = "NextGen catchment ID"
     v_cat[:] = catchments.astype(object)
 
@@ -184,7 +184,7 @@ def main():
     chunk_t = min(max_steps, 481)
     chunk_c = min(n_catchments, 64)
     v_data = nc_out.createVariable(
-        args.var, "f4", ("event", "time_step", "catchment"),
+        args.var, 'f4', ('event', 'time_step', 'catchment'),
         fill_value=np.nan, zlib=True, complevel=args.complevel,
         chunksizes=(chunk_e, chunk_t, chunk_c),
     )
@@ -194,7 +194,7 @@ def main():
 
     # second pass: stream each event into the output
     for i, rec in enumerate(records):
-        ds = netCDF4.Dataset(rec["path"], "r")
+        ds = netCDF4.Dataset(rec['path'], 'r')
         data = ds.variables[args.var][:]   # (time, catchment)
         ds.close()
         # transpose to (catchment, time) then write (event, time_step, catchment)
@@ -204,9 +204,9 @@ def main():
             print(f"  {i + 1}/{n_events} events written")
 
     nc_out.close()
-    print(f"Done → {args.output}")
+    print(f"Done -> {args.output}")
     print(f"  Shape: ({n_events} events, {max_steps} max steps, {n_catchments} catchments)")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -41,3 +41,9 @@ This repository serves as a library of data aggregation and preprocessing script
     # Extract to hourly and 15min event datasets
     python engine/forcing/aorc/to_events.py --events /Users/leoglonz/Desktop/noaa/data/upper_neuse/events.csv --forcing /Users/leoglonz/Desktop/noaa/data/upper_neuse/aorc_extracted.nc --output-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse
     ```
+
+3. Combine AORC + MRMS
+
+    ```bash
+
+    ```
