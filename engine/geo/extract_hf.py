@@ -22,10 +22,10 @@ Outputs (written to --output-dir):
 Usage
 -----
     # From a CSV column (e.g. gage_divide_id)
-    python extract_hydrofabric.py --csv /Users/leoglonz/Desktop/noaa/data/huc8_03020201_events_and_gages.csv --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg --output-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse
+    python ./engine/geo/extract_hf.py --csv /Users/leoglonz/Desktop/noaa/data/huc8_03020201_events_and_gages.csv --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg --output-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse
 
     # From an explicit list of divide IDs
-    python extract_hydrofabric.py \\
+    python ./engine/geo/extract_hf.py \\
         --divide-ids cat-251968 cat-251969 cat-251970 \\
         --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg \\
         --output-dir ../data/hydrofabric_subset

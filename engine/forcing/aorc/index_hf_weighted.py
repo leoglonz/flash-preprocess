@@ -28,19 +28,18 @@ cell_id = row * 8401 + col.
 Selection modes (mutually exclusive):
   --gpkg PATH           All divides in a geopackage
   --catchment-ids IDS   Explicit catchment IDs
+  --csv PATH            CSV with a column of catchment IDs (default col: gage_cat-id)
   (neither)             All CONUS catchments
 
 Optional:
   --upstream            Also include every upstream catchment (reads hydrofabric
-                        network via SQLite).
+                        network via sqlite).
 
 Usage examples:
 
-  python index_hf22_weighted.py \\
-      --gpkg /path/to/vpu-13_subset.gpkg \\
-      --output data/vpu13_weighted_index.pkl
+  python ./engine/forcing/aorc/index_hf_weighted.py --gpkg /path/to/vpu-13_subset.gpkg --output data/vpu13_weighted_index.pkl
 
-  python index_hf22_weighted.py \\
+  python index_hf_weighted.py \\
       --catchment-ids cat-1000 cat-2000 --upstream \\
       --output data/custom_weighted_index.pkl
 """
@@ -61,7 +60,7 @@ from flash_preprocess.utils import build_upstream_graph, expand_upstream, HF_PAT
 
 
 # Default output path for the weighted index dictionary.
-OUT_DEFAULT = "/Users/leoglonz/Desktop/noaa/data/weighted_index_dict.pkl"
+OUT_DEFAULT = '/Users/leoglonz/Desktop/noaa/data/weighted_index_dict.pkl'
 
 
 # AORC v1.1 1km grid — fixed for all years 1979-2025.
@@ -79,7 +78,7 @@ def build_aorc_grid() -> xr.Dataset:
 
     The grid dimensions and coordinates are identical for every AORC year
     (1979-2025), so no S3 download is needed. Latitude is sorted descending
-    (row 0 = ~55°N) to match the flat cell_id convention used in extraction.
+    (row 0 = ~55N) to match the flat cell_id convention used in extraction.
     exactextract expects coordinate names 'x' and 'y'.
     """
     # descending latitude: highest lat first
@@ -95,12 +94,12 @@ def build_aorc_grid() -> xr.Dataset:
     )
     dummy = np.zeros((AORC_NROWS, AORC_NCOLS), dtype=np.float32)
     grid = xr.Dataset(
-        {"dummy": (["y", "x"], dummy)},
-        coords={"y": lat, "x": lon},
+        {'dummy': (['y', 'x'], dummy)},
+        coords={'y': lat, 'x': lon},
     )
     print(f"AORC grid: {AORC_NROWS} rows x {AORC_NCOLS} cols  "
-          f"(lat {lat[-1]:.2f}°N – {lat[0]:.2f}°N, "
-          f"lon {lon[0]:.2f}°E – {lon[-1]:.2f}°E)")
+          f"(lat {lat[-1]:.2f}N - {lat[0]:.2f}N, "
+          f"lon {lon[0]:.2f}E - {lon[-1]:.2f}E)")
     return grid
 
 
@@ -130,13 +129,13 @@ def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
     print(f"Loading divides from hydrofabric...")
     conn = sqlite3.connect(hydrofabric_path)
     id_list = sorted(target_ids)
-    placeholders = ",".join(f"'{c}'" for c in id_list)
+    placeholders = ','.join(f"'{c}'" for c in id_list)
     df = pd.read_sql(
         f"SELECT divide_id FROM divides WHERE divide_id IN ({placeholders})", conn
     )
     conn.close()
 
-    found_ids = set(df["divide_id"])
+    found_ids = set(df['divide_id'])
     missing = sorted(target_ids - found_ids)
     if missing:
         print(f"  WARNING: {len(missing)} IDs not found in hydrofabric (skipped)")
@@ -145,7 +144,7 @@ def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
 
     gdf = gpd.read_file(hydrofabric_path, layer="divides",
                         where=f"divide_id IN ({placeholders})")
-    gdf = gdf[["divide_id", "geometry"]].copy()
+    gdf = gdf[['divide_id', 'geometry']].copy()
     gdf = gdf.to_crs("EPSG:4326")
     print(f"  {len(gdf)} catchments loaded, reprojected to EPSG:4326")
 
@@ -158,20 +157,20 @@ def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
             continue
         row = weights_df.loc[cat_id]
         station_ids.append(cat_id)
-        cell_ids_list.append(np.asarray(row["cell_id"], dtype=np.int64))
-        w = np.asarray(row["coverage"], dtype=np.float32)
+        cell_ids_list.append(np.asarray(row['cell_id'], dtype=np.int64))
+        w = np.asarray(row['coverage'], dtype=np.float32)
         weights_list.append(w / w.sum())
 
     out = {
-        "station_ids": np.array(station_ids),
-        "cell_ids": cell_ids_list,
-        "weights": weights_list,
-        "rs_row": len(grid_ds.y),
-        "rs_col": len(grid_ds.x),
+        'station_ids': np.array(station_ids),
+        'cell_ids': cell_ids_list,
+        'weights': weights_list,
+        'rs_row': len(grid_ds.y),
+        'rs_col': len(grid_ds.x),
     }
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    with open(output_path, "wb") as f:
+    with open(output_path, 'wb') as f:
         pickle.dump(out, f)
     print(f"Saved {len(station_ids)} catchments -> {output_path}")
 
@@ -182,35 +181,45 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--hydrofabric", default=HF_PATH_DEFAULT)
-    parser.add_argument("--output", default=OUT_DEFAULT)
-    parser.add_argument("--upstream", action="store_true",
+    parser.add_argument('--hydrofabric', default=HF_PATH_DEFAULT)
+    parser.add_argument('--output', default=OUT_DEFAULT)
+    parser.add_argument('--upstream', action='store_true',
                         help="Expand selection to all upstream catchments")
-    parser.add_argument("--workers", type=int, default=None,
+    parser.add_argument('--workers', type=int, default=None,
                         help="Parallel workers for weight computation (default: cpu_count-1)")
 
     sel = parser.add_mutually_exclusive_group()
-    sel.add_argument("--gpkg", default=None,
+    sel.add_argument('--gpkg', default=None,
                      help="Select all divides from this geopackage")
-    sel.add_argument("--catchment-ids", nargs="+", metavar="ID",
+    sel.add_argument('--catchment-ids', nargs='+', metavar='ID',
                      help="Explicit catchment IDs, e.g. cat-100 cat-200")
+    sel.add_argument('--csv', default=None, metavar='PATH',
+                     help="CSV file with catchment IDs in a column")
+    parser.add_argument('--csv-column', default="gage_cat-id", metavar="COL",
+                        help="Column name in --csv that contains catchment IDs "
+                             "(default: %(default)s). Bare integers are prefixed with 'cat-'.")
 
     args = parser.parse_args()
 
     # seed selection
     if args.gpkg:
         gdf = gpd.read_file(args.gpkg, layer="divides")
-        seed_ids = set(gdf["divide_id"].tolist())
+        seed_ids = set(gdf['divide_id'].tolist())
         print(f"Loaded {len(seed_ids)} catchments from {args.gpkg}")
     elif args.catchment_ids:
         seed_ids = set(args.catchment_ids)
         print(f"Using {len(seed_ids)} explicitly provided catchment IDs")
+    elif args.csv:
+        df_csv = pd.read_csv(args.csv)
+        raw = df_csv[args.csv_column].astype(str).tolist()
+        seed_ids = {v if v.startswith('cat-') else f"cat-{v}" for v in raw}
+        print(f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})")
     else:
         print(f"No selection — using all divides in {args.hydrofabric}")
         conn = sqlite3.connect(args.hydrofabric)
         df = pd.read_sql("SELECT divide_id FROM divides", conn)
         conn.close()
-        seed_ids = set(df["divide_id"].tolist())
+        seed_ids = set(df['divide_id'].tolist())
         print(f"  {len(seed_ids)} total divides")
 
     # upstream expansion
@@ -226,5 +235,5 @@ def main():
     build_and_save(target_ids, grid_ds, args.hydrofabric, args.output)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -18,3 +18,26 @@ This repository serves as a library of data aggregation and preprocessing script
 3. Downloading and aggregation Analysis of Record for Calibration (AORC) **forcing measurements** (precipitation, temperature, solar radiation lw/sw, humidity, pressure, and wind velocity u/v) at hourly resolution;
 
 4. **USGS streamflow gauge observations**.
+
+</br>
+
+## dMG Preprocess Steps:
+
+1. Hydrofabric extraction:
+
+    ```bash
+    python ./engine/geo/extract_hf.py --csv /Users/leoglonz/Desktop/noaa/data/huc8_03020201_events_and_gages.csv --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg --output-dir data/upper_neuse/
+    ```
+
+2. AORC extraction:
+
+    ```bash
+    # Get index
+    python engine/forcing/aorc/index_hf_weighted.py --csv /Users/leoglonz/Desktop/noaa/data/upper_neuse/events.csv --upstream --output data/upper_neuse/weighted_index_dict.pkl
+
+    # Get AORC
+    python engine/forcing/aorc/extract.py --start 2021-01-01 --end 2025-12-31 --index data/upper_neuse/weighted_index_dict.pkl --output-dir data/upper_neuse
+
+    # Extract to hourly and 15min event datasets
+    python engine/forcing/aorc/to_events.py --events /Users/leoglonz/Desktop/noaa/data/upper_neuse/events.csv --forcing /Users/leoglonz/Desktop/noaa/data/upper_neuse/aorc_extracted.nc --output-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse
+    ```
