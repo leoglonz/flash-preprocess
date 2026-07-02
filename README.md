@@ -26,7 +26,13 @@ This repository serves as a library of data aggregation and preprocessing script
 1. Hydrofabric extraction:
 
     ```bash
-    python ./engine/geo/extract_hf.py --csv /Users/leoglonz/Desktop/noaa/data/huc8_03020201_events_and_gages.csv --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg --output-dir data/upper_neuse/
+    # Download Community HydroFabric v2.2
+    aws s3 cp s3://communityhydrofabric/hydrofabrics/community/conus_nextgen.gpkg . --no-sign-request
+
+    # Or
+    aws s3 cp s3://communityhydrofabric/hydrofabrics/community/conus_nextgen.tar.gz . --no-sign-request
+
+    python ./engine/geo/extract_hf.py --csv  --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg --output-dir data/upper_neuse/
     ```
 
 2. AORC extraction:
@@ -45,5 +51,5 @@ This repository serves as a library of data aggregation and preprocessing script
 3. Combine AORC + MRMS
 
     ```bash
-
+    python engine/forcing/merge_15min.py --aorc /gpfs/leoglonz/suijin/flash-preprocess/data/aorc_15min.nc --mrms /gpfs/leoglonz/suijin/flash-preprocess/data/mrms_15min.nc  --output /gpfs/leoglonz/suijin/flash-preprocess/data/forcing_15min.nc
     ```

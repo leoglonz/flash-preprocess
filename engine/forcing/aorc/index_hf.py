@@ -1,28 +1,28 @@
-"""Build a HydroFabric v2.2 index for of catchments and upstream areas.
+"""Subset a HydroFabric v2.2 AORC index to a specific catchment set.
 
-The CONUS index (index_dict.pkl) maps each NextGen catchment to AORC 1km
-grid pixels (unstructured mesh) that fall inside it. This script allows
-subsetting for a specific catchment set.
+The CONUS index (index_dict.pkl) maps each NextGen catchment to the AORC
+1km grid pixels (unstructured mesh) that fall inside it. This script filters
+that index down to a chosen set of catchments.
 
-Selection:
-  --gpkg <PATH>        All divides in a geopackage
-  --catchment-ids IDS  Explicit list of catchment IDs
-  --csv PATH           CSV with a column of catchment IDs (default col: gage_cat-id)
-  (none)               All CONUS catchments
+Selection (mutually exclusive; default: all CONUS catchments)
+  --gpkg PATH           All divides in a geopackage
+  --catchment-ids IDS    Explicit list of catchment IDs
+  --csv PATH             CSV with a column of catchment IDs (default col: gage_cat-id)
 
-Optional:
-  --upstream           Include every catchment upstream of the selection.
-                       Reads the full hydrofabric network to trace upstream.
+Optional
+  --upstream             Also include every catchment upstream of the
+                         selection (reads the full hydrofabric network).
 
-Usage examples:
+Output: ./subset_index_dict.pkl by default; override with --output.
 
-  # All catchments in a VPU geopackage:
-  python build_aorc_index.py --gpkg /path/to/vpu-13_subset.gpkg
+Usage
+-----
+    # All catchments in a VPU geopackage
+    python engine/forcing/aorc/index_hf.py --gpkg /path/to/vpu-13_subset.gpkg
 
-  # Specific outlets + everything upstream:
-  python build_aorc_index.py --catchment-ids cat-1000 cat-2000 --upstream
-
-  # Default output path is ./subset_index_dict.pkl; override with --output.
+    # Specific outlets + everything upstream
+    python engine/forcing/aorc/index_hf.py \\
+        --catchment-ids cat-1000 cat-2000 --upstream
 """
 
 import argparse

@@ -1,13 +1,17 @@
 """Core AORC spatial extraction and disaggregation utilities."""
 
+import atexit
 from multiprocessing.pool import ThreadPool
 
 import dask
 import numpy as np
 import s3fs
 import xarray as xr
+from scipy.sparse import csr_matrix
 
-dask.config.set(pool=ThreadPool(4))
+_pool = ThreadPool(16)
+dask.config.set(pool=_pool)
+atexit.register(_pool.terminate)
 
 
 VARIABLE_LIST = [
@@ -126,32 +130,52 @@ def spatial_subset_equal(
     return ds_sub, (rows - r0).tolist(), (cols - c0).tolist()
 
 
-def weighted_mean(
-    flat_raster: np.ndarray,
+def build_weight_matrix(
     cell_ids_list: list,
     weights_list: list,
-    num_catchments: int,
-    num_hours: int,
-) -> np.ndarray:
-    """Area-weighted catchment average using exactextract coverage fractions.
+    n_basins: int,
+    n_pixels: int,
+) -> csr_matrix:
+    """Build a (n_basins, n_pixels) CSR weight matrix (rows sum to 1).
+
+    Parameters
+    ----------
+    cell_ids_list
+        Per-catchment local flat pixel indices into the bbox grid.
+    weights_list
+        Per-catchment area weights (unnormalised).
+    n_basins
+        Number of catchments.
+    n_pixels
+        Total pixels in the bbox (bbox_lat * bbox_lon).
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix
+        Shape (n_basins, n_pixels), float32.
+    """
+    rows = np.concatenate([np.full(len(c), i, dtype=np.int32) for i, c in enumerate(cell_ids_list)])
+    cols = np.concatenate(cell_ids_list).astype(np.int32)
+    vals = np.concatenate([w / w.sum() for w in weights_list]).astype(np.float32)
+    return csr_matrix((vals, (rows, cols)), shape=(n_basins, n_pixels), dtype=np.float32)
+
+
+def weighted_mean(flat_raster: np.ndarray, W: csr_matrix) -> np.ndarray:
+    """Area-weighted catchment average via sparse matmul.
 
     Parameters
     ----------
     flat_raster
         Shape (num_hours, n_pixels_in_bbox).
+    W
+        Pre-built weight matrix from build_weight_matrix, shape (n_basins, n_pixels).
 
     Returns
     -------
     np.ndarray
-        Shape (num_catchments, num_hours).
+        Shape (num_catchments, num_hours), float32. NaN propagates if any pixel is NaN.
     """
-    out = np.full((num_catchments, num_hours), np.nan, dtype=np.float32)
-    for i, (cids, w) in enumerate(zip(cell_ids_list, weights_list)):
-        cols = flat_raster[:, cids]
-        has_nan = np.isnan(cols).any(axis=1)
-        out[i] = np.nansum(cols * w, axis=1) / w.sum()
-        out[i, has_nan] = np.nan
-    return out
+    return np.asarray(W @ flat_raster.T, dtype=np.float32)  # (n_basins, n_hours)
 
 
 def groupby_mean_equal(data: np.ndarray, interval: np.ndarray) -> np.ndarray:

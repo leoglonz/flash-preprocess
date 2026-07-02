@@ -1,47 +1,41 @@
 """Build an area-weighted AORC index using exactextract conservative regridding.
 
-Unlike the point-in-polygon approach in index_hf22.py (which gives equal weight
-to every pixel whose center falls inside a catchment), this script computes the
-fractional overlap between each AORC 1km grid cell and each catchment polygon,
-producing proper area-weighted averages at catchment boundaries.
+Unlike the point-in-polygon approach in index_hf.py (equal weight for every
+pixel whose center falls inside a catchment), this script computes the
+fractional overlap between each AORC 1km grid cell and each catchment
+polygon, producing proper area-weighted averages at catchment boundaries.
 
-The weight computation uses exactextract (the same library used by
-NGIAB_data_preprocess) and downloads only one timestep of one variable from
-S3 (~140 MB) to establish the AORC grid geometry.
+The weight computation uses exactextract and downloads only one timestep of
+one variable from S3 (~140 MB) to establish the AORC grid geometry.
 
-Output pkl format (compatible with aorc_extract_hourly.py --weighted):
-  station_ids:
-    np.ndarray[str] shape (N,)
-  cell_ids:
-    list[np.ndarray[int64]] flat grid index per catchment pixel
-  weights:
-    list[np.ndarray[float32]] coverage fraction (0-1) per pixel
-  rs_row:
-    4201
-  rs_col:
-    8401
-
-Flat index convention: row 0 = highest latitude (~55°N), consistent with
-sortby(latitude, ascending=False) used in aorc_extract_hourly.py.
-cell_id = row * 8401 + col.
-
-Selection modes (mutually exclusive):
+Selection (mutually exclusive; default: all CONUS catchments)
   --gpkg PATH           All divides in a geopackage
   --catchment-ids IDS   Explicit catchment IDs
   --csv PATH            CSV with a column of catchment IDs (default col: gage_cat-id)
-  (neither)             All CONUS catchments
 
-Optional:
-  --upstream            Also include every upstream catchment (reads hydrofabric
-                        network via sqlite).
+Optional
+  --upstream            Also include every upstream catchment (reads the
+                        hydrofabric network via sqlite).
 
-Usage examples:
+Output
+------
+  Pickle compatible with extract.py's --index, containing:
+    station_ids  np.ndarray[str]        shape (N,)
+    cell_ids     list[np.ndarray[i64]]  flat grid index per catchment pixel
+    weights      list[np.ndarray[f32]]  coverage fraction (0-1) per pixel
+    rs_row, rs_col  4201, 8401 (AORC grid shape)
 
-  python ./engine/forcing/aorc/index_hf_weighted.py --gpkg /path/to/vpu-13_subset.gpkg --output data/vpu13_weighted_index.pkl
+  Flat index convention: row 0 = highest latitude (~55°N), consistent with
+  sortby(latitude, ascending=False). cell_id = row * 8401 + col.
 
-  python index_hf_weighted.py \\
-      --catchment-ids cat-1000 cat-2000 --upstream \\
-      --output data/custom_weighted_index.pkl
+Usage
+-----
+    python engine/forcing/aorc/index_hf_weighted.py \\
+        --gpkg /path/to/vpu-13_subset.gpkg --output /path/to/weighted_index.pkl
+
+    python engine/forcing/aorc/index_hf_weighted.py \\
+        --catchment-ids cat-1000 cat-2000 --upstream \\
+        --output /path/to/custom_weighted_index.pkl
 """
 
 import argparse
@@ -54,9 +48,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
-from data_processing.forcings import get_cell_weights
 
-from flash_preprocess.utils import build_upstream_graph, expand_upstream, HF_PATH_DEFAULT
+from flash_preprocess.utils import build_upstream_graph, expand_upstream, get_cell_weights, HF_PATH_DEFAULT
 
 
 # Default output path for the weighted index dictionary.
@@ -74,7 +67,7 @@ AORC_DLAT = 1.0 / 120.0  # ~0.008333° spacing (~1 km)
 
 
 def build_aorc_grid() -> xr.Dataset:
-    """Construct the AORC 1km grid as an xr.Dataset from hardcoded constants.
+    """Construct the AORC 1km grid as an xr.Dataset.
 
     The grid dimensions and coordinates are identical for every AORC year
     (1979-2025), so no S3 download is needed. Latitude is sorted descending

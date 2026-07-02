@@ -4,21 +4,27 @@ Reads the NOAA AORC v1.1 1km zarr from S3 (hourly, 1979-2025), spatially
 averages each variable over catchment pixels, and optionally disaggregates
 to 15-minute intervals.
 
-Time range: specify --start / --end (ISO 8601 dates or datetimes). The script
-opens one yearly zarr per calendar year spanned and slices to the exact range.
-Use --year YYYY as a shorthand for a full calendar year.
+Time range is set via --start / --end (ISO 8601 dates or datetimes), or
+--year YYYY as a shorthand for a full calendar year. One yearly zarr is
+opened per calendar year spanned and sliced to the exact range.
 
-Timestep: use --timestep 15min to disaggregate from hourly to 15-minute.
-  APCP_surface (accumulated precip): uniform split — each hourly value is
+Disaggregation (--timestep 15min):
+  APCP_surface (accumulated precip): uniform split — each hourly value
     divided by 4 and repeated, conserving the total accumulation.
-  All other variables (instantaneous): linearly interpolated between hourly
-    values; the last hourly value is held for the trailing sub-hour steps.
+  All other variables (instantaneous): linearly interpolated between
+    hourly values, with the last value held for trailing sub-hour steps.
 
-Supports two index formats (auto-detected):
-  Equal-weight (built by index_hf.py)
-  Area-weighted (built by index_hf_weighted.py) <- more accurate at boundaries
+Index format (auto-detected):
+  Equal-weight, built by index_hf.py
+  Area-weighted, built by index_hf_weighted.py (more accurate at boundaries)
 
-Usage:
+Output
+------
+  <output-dir>/forcing.nc  single NetCDF, shape (catchment, time) per variable
+    Row i corresponds to station_ids[i] from the index pkl.
+
+Usage
+-----
     # Full year, hourly
     python engine/forcing/aorc/extract.py --year 2022 --index /path/to/index.pkl
 
@@ -27,12 +33,6 @@ Usage:
         --start 2019-10-01 --end 2022-09-30T23:00 \\
         --timestep 15min \\
         --index /path/to/index.pkl --output-dir /path/to/output/
-
-Output: <output-dir>/forcing.nc
-    Single NetCDF with all variables, time coordinate, and catchment-id coordinate.
-    Shape per variable: (catchment, time)
-
-Row i corresponds to station_ids[i] from the index pkl.
 """
 
 import os
@@ -46,11 +46,10 @@ import numpy as np
 
 from flash_preprocess.aorc import (
     VARIABLE_LIST,
-    ACCUM_VARS,
-    _AORC_NCOLS,
     open_aorc,
     spatial_subset_weighted,
     spatial_subset_equal,
+    build_weight_matrix,
     weighted_mean,
     groupby_mean_equal,
     disaggregate_to_15min,
@@ -315,17 +314,29 @@ def main():
     v_lon.standard_name = 'longitude'
     v_lon[:] = cat_lons
 
+    # pre-build sparse weight matrix (weighted path) — built once, reused per variable
+    if weighted:
+        n_pixels = len(lat_bbox) * len(lon_bbox)
+        print("  Building sparse weight matrix...")
+        W = build_weight_matrix(cell_ids_list, weights_list, n_basins, n_pixels)
+
+    # fetch all variables in a single dask graph execution (parallel S3 reads)
+    print(f"  Fetching all {len(args.variables)} variables from zarr...")
+    t_fetch = time.time()
+    ds_computed = ds[list(args.variables)].compute()
+    print(f"  Fetch complete ({time.time() - t_fetch:.1f}s)")
+
     print(f"Streaming to {nc_path} ({n_basins} catchments * {n_steps} steps)")
 
     for var_name in args.variables:
         print(f"  {var_name}...", end=" ", flush=True)
         t_var = time.time()
 
-        raw = ds[var_name].compute().values  # (hours, bbox_lat, bbox_lon)
+        raw = ds_computed[var_name].values  # (hours, bbox_lat, bbox_lon)
 
         if weighted:
             flat = raw.reshape(n_hours, -1)
-            result = weighted_mean(flat, cell_ids_list, weights_list, n_basins, n_hours)
+            result = weighted_mean(flat, W)
         else:
             raw_sel = raw[..., row_flat, col_flat]  # (hours, total_pixels)
             result = groupby_mean_equal(raw_sel.T, pixel_counts)
@@ -338,7 +349,7 @@ def main():
 
         nc_var = nc_out.createVariable(
             var_name, 'f4', ('catchment', 'time'),
-            zlib=True, complevel=4,
+            zlib=True, complevel=1,
             chunksizes=(n_basins, min(n_steps, 1000)),
         )
         nc_var[:] = result.astype(np.float32)
@@ -346,6 +357,7 @@ def main():
         del result
         print(f"done ({time.time() - t_var:.1f}s)")
 
+    del ds_computed
     ds.close()
 
     nc_out.close()

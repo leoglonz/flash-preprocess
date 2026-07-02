@@ -1,34 +1,38 @@
 """Extract and subset the CONUS NextGen HydroFabric for flash-flood event sims.
 
-Reads divide IDs from a CSV column (or an explicit list), then
-subsets HydroFabric to those catchments plus their full upstream
-network, derives the river topology DAG, locates USGS gages within the region,
-and writes everything needed for dMG runtime
-(see https://github.com/mhpi/generic_deltamodel).
+Reads divide IDs from a CSV column (or an explicit list), subsets the
+HydroFabric to those catchments plus their full upstream network, derives
+the river topology DAG, locates USGS gages within the region, and writes
+everything needed for dMG runtime (see
+https://github.com/mhpi/generic_deltamodel).
 
-Outputs (written to --output-dir):
-    divides.gpkg
-        Catchment divide geometries + key attributes
-    topology.json
-        River network DAG:
-            {
-                "nodes": [int, ...],
-                "edges": [[upstream_int, downstream_int], ...],
-                "gage_hf": {"USGS_gage_id": outlet_int_divide_id, ...}
-            }
-    gauges.csv
-        USGS gage metadata = STAID, DRAIN_SQKM, divide_id
+Output
+------
+  {output-dir}/divides.gpkg
+      Catchment divide geometries + key attributes
+  {output-dir}/topology.json
+      River network DAG:
+        {
+            "nodes": [int, ...],
+            "edges": [[upstream_int, downstream_int], ...],
+            "gage_hf": {"USGS_gage_id": outlet_int_divide_id, ...}
+        }
+  {output-dir}/gauges.csv
+      USGS gage metadata: STAID, DRAIN_SQKM, divide_id
 
 Usage
 -----
     # From a CSV column (e.g. gage_divide_id)
-    python ./engine/geo/extract_hf.py --csv /Users/leoglonz/Desktop/noaa/data/huc8_03020201_events_and_gages.csv --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg --output-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse
+    python engine/geo/extract_hf.py \\
+        --csv /path/to/events_and_gages.csv \\
+        --gpkg /path/to/conus_nextgen.gpkg \\
+        --output-dir /path/to/output/
 
     # From an explicit list of divide IDs
-    python ./engine/geo/extract_hf.py \\
+    python engine/geo/extract_hf.py \\
         --divide-ids cat-251968 cat-251969 cat-251970 \\
-        --gpkg ~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg \\
-        --output-dir ../data/hydrofabric_subset
+        --gpkg /path/to/conus_nextgen.gpkg \\
+        --output-dir /path/to/output/
 """
 
 import argparse
@@ -46,7 +50,7 @@ from flash_preprocess.utils import build_upstream_graph, expand_upstream
 log = logging.getLogger('ExtractHF')
 
 
-DEFAULT_COLUMN_DIVIDE_ID = 'gage_divide_id'
+DEFAULT_COLUMN_DIVIDE_ID = 'gage_cat-id'
 
 
 def _cat_to_int(cat_id: str) -> int:

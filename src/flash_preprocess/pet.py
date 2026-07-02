@@ -1,8 +1,3 @@
-"""Potential evapotranspiration calculations for AORC-derived forcings.
-
-penman_monteith_pet is adapted from dhbv2-flash/src/dhbv2/pet.py.
-"""
-
 from typing import Optional
 
 import numpy as np
@@ -19,24 +14,24 @@ def penman_monteith_pet(
     albedo: Optional[float] = 0.23,
     eps_s: Optional[float] = 0.98,
 ) -> np.ndarray:
-    """Hourly FAO-56 Penman-Monteith reference ET₀ from AORC variables (mm h⁻¹).
+    """Hourly FAO-56 Penman-Monteith for 2D AORC grids.
 
     Parameters
     ----------
     temp
-        Air temperature at 2 m, °C.
+        Air temperature at 2 m, degC.
     spfh
-        Specific humidity at 2 m, kg kg⁻¹ (auto-detected if in g kg⁻¹).
+        Specific humidity at 2 m, kg kg-1 (auto-detected if in g kg-1).
     dlwrf
-        Downward longwave radiation, W m⁻².
+        Downward longwave radiation, W m-2.
     dswrf
-        Downward shortwave radiation, W m⁻².
+        Downward shortwave radiation, W m-2.
     pres
         Surface pressure, Pa.
     ugrd_10m
-        Eastward wind at 10 m, m s⁻¹.
+        Eastward wind at 10 m, m s-1.
     vgrd_10m
-        Northward wind at 10 m, m s⁻¹.
+        Northward wind at 10 m, m s-1.
     albedo
         Surface albedo (default 0.23 for grass reference crop).
     eps_s
@@ -45,21 +40,21 @@ def penman_monteith_pet(
     Returns
     -------
     np.ndarray
-        ET₀, same shape as inputs, mm h⁻¹, non-negative.
+        PET, same shape as inputs, mm h-1, non-negative.
     """
-    # Auto-detect if spfh was supplied in g/kg and convert to kg/kg
     spfh = np.where(spfh > 0.02, spfh / 1000.0, spfh)
 
-    P = pres / 1000.0                                      # Pa → kPa
+    P = pres / 1000.0 
     u2 = np.sqrt(ugrd_10m**2 + vgrd_10m**2) * 4.87 / np.log(67.8 * 10 - 5.42)
-    gamma = 0.000665 * P                                   # psychrometric constant kPa/°C
-    es = 0.6108 * np.exp((17.27 * temp) / (temp + 237.3)) # sat. VP kPa
-    ea = (spfh * P) / (0.622 + 0.378 * spfh)              # actual VP kPa
-    delta = (4098 * es) / (temp + 237.3) ** 2             # slope of sat. VP curve kPa/°C
+    gamma = 0.000665 * P
 
-    Rs = dswrf * 0.0036                                    # W/m² → MJ/m²/h
+    es = 0.6108 * np.exp((17.27 * temp) / (temp + 237.3))
+    ea = (spfh * P) / (0.622 + 0.378 * spfh)
+    delta = (4098 * es) / (temp + 237.3) ** 2
+
+    Rs = dswrf * 0.0036
     Rl_down = dlwrf * 0.0036
-    # Stefan-Boltzmann in MJ/m²/h/K⁴ (= 5.67e-8 W/m²/K⁴ × 3.6e-3)
+    
     sigma = 4.903e-9 / 24.0
     Rl_up = eps_s * sigma * (temp + 273.15) ** 4
     Rn = (1 - albedo) * Rs + (Rl_down - Rl_up)

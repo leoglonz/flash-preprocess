@@ -1,29 +1,29 @@
-"""Preprocess AORC forcings for a set of flash-flood events.
+"""Slice pre-extracted AORC forcing into per-event windows.
 
-Reads a pre-extracted AORC NetCDF (output of extract.py) and writes two
-aggregated output files:
+Reads a pre-extracted AORC NetCDF (output of extract.py) and, for each event
+in the events CSV, writes two aggregated output files. Events whose time
+window is absent from the forcing file are reported and skipped.
 
-  {output_dir}/events_hourly.nc
+PET is computed via the hourly FAO-56 Penman-Monteith formula. TMP is
+disaggregated to 15 min by linear interpolation; PET by uniform split
+(/ 4 per step, conserving the hourly total).
+
+Output
+------
+  {output_dir}/aorc_hr.nc
       dims: (event, time_step, catchment), up to 660 hourly steps
       time: [centroid - 30d, centroid - 2.5d]
       vars: APCP_surface, TMP_2maboveground, PET
 
-  {output_dir}/events_15min.nc
+  {output_dir}/aorc_15min.nc
       dims: (event, time_step, catchment), up to 480 15-min steps
       time: [centroid - 2.5d, centroid + 2.5d]
       vars: TMP_2maboveground, PET
 
-Both files carry per-event coordinates:
-  event_id    (event,)  str
-  n_steps     (event,)  int32   actual valid steps (slice [:n_steps] to unpad)
-  event_start (event,)  float64 minutes since 1970-01-01 for step 0
-
-Events whose time window is absent from the forcing file are reported and
-skipped.
-
-PET is computed via the hourly FAO-56 Penman-Monteith formula.
-TMP is disaggregated to 15 min by linear interpolation; PET by uniform
-split (/ 4 per step, conserving the hourly total).
+  Both files carry per-event coordinates:
+    event_id    (event,)  str
+    n_steps     (event,)  int32   actual valid steps (slice [:n_steps] to unpad)
+    event_start (event,)  float64 minutes since 1970-01-01 for step 0
 
 Usage
 -----
@@ -49,9 +49,9 @@ _ANTECEDENT_DAYS = 30.0
 _PRE_EVENT_DAYS = 2.5  # half of 5-day event window
 
 _MAX_HOURLY = int((_ANTECEDENT_DAYS - _PRE_EVENT_DAYS) * 24)  # 660
-_MAX_15MIN = int(2 * _PRE_EVENT_DAYS * 24 * 4)                # 480
+_MAX_15MIN = int(2 * _PRE_EVENT_DAYS * 24 * 4)  # 480
 
-_EVENT_ID_COL = 'episode_id'
+_EVENT_ID_COL = 'event_ids'
 _BEGIN_COL = 'BEGIN_DATE_TIME'
 _END_COL = 'END_DATE_TIME'
 
@@ -92,11 +92,13 @@ def _event_masks(
     evt_end_15m = (centroid + np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')
                    ).astype('datetime64[m]')
     evt_end_h = evt_end_15m.astype('datetime64[h]') + np.timedelta64(1, 'h')
-    n_15min = int((evt_end_15m - ant_end.astype('datetime64[m]'))
-                  / np.timedelta64(15, 'm'))
+    n_15min = min(
+        int((evt_end_15m - ant_end.astype('datetime64[m]')) / np.timedelta64(15, 'm')),
+        _MAX_15MIN,
+    )
 
     ant_mask = (time_dt >= ant_start.astype('datetime64[m]')) & \
-               (time_dt <= ant_end.astype('datetime64[m]'))
+               (time_dt < ant_end.astype('datetime64[m]'))
     evt_mask = (time_dt >= ant_end.astype('datetime64[m]')) & \
                (time_dt <= evt_end_h.astype('datetime64[m]'))
 
@@ -212,8 +214,8 @@ def main() -> None:
         print("Nothing to write.")
         return
 
-    hourly_path = output_dir / 'events_hourly.nc'
-    min15_path = output_dir / 'events_15min.nc'
+    hourly_path = output_dir / 'aorc_hr.nc'
+    min15_path = output_dir / 'aorc_15min.nc'
 
     nc_hourly = _create_output_nc(
         hourly_path, n_events, _MAX_HOURLY, meta,

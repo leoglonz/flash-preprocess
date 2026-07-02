@@ -2,6 +2,10 @@ import sqlite3
 from collections import deque
 
 import pandas as pd
+import xarray as xr
+import geopandas as gpd
+from exactextract import exact_extract
+from exactextract.raster import NumPyRasterSource
 
 
 HF_PATH_DEFAULT = '/Users/leoglonz/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg'
@@ -65,3 +69,44 @@ def expand_upstream(
                 visited.add(up)
                 queue.append(up)
     return visited
+
+
+def get_cell_weights(raster: xr.Dataset, gdf: gpd.GeoDataFrame, wkt: str) -> pd.DataFrame:
+    """From CIROH-UA/NGIAB_data_preprocess;
+
+    Get the cell weights (coverage) for each cell in a divide. Coverage is
+    defined as the fraction (a float in [0,1]) of a raster cell that overlaps
+    with the polygon in the passed gdf.
+
+    Parameters
+    ----------
+    raster : xr.Dataset
+        One timestep of a gridded forcings dataset.
+    gdf : gpd.GeoDataFrame
+        A GeoDataFrame with a polygon feature.
+    wkt : str
+        Well-known text (WKT) representation of gdf's coordinate reference
+        system (CRS)
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame indexed by divide_id that contains information about coverage
+        for each raster cell in gridded forcing file.
+    """
+    xmin = min(raster.x)
+    xmax = max(raster.x)
+    ymin = min(raster.y)
+    ymax = max(raster.y)
+    data_vars = list(raster.data_vars)
+    rastersource = NumPyRasterSource(
+        raster[data_vars[0]], srs_wkt=wkt, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax
+    )
+    output: pd.DataFrame = exact_extract(
+        rastersource,
+        gdf,
+        ["cell_id", "coverage"],
+        include_cols=["divide_id"],
+        output="pandas",
+    )  # type: ignore
+    return output.set_index("divide_id")

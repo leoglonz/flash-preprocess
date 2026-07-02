@@ -1,39 +1,35 @@
 """Merge AORC and MRMS 15-min NetCDFs into a single combined forcing file.
 
-The two input files use different event identifiers (episode_id vs storm_id)
-and may cover different catchment sets. This script:
-  1. Joins events via a manifest CSV that links the two ID spaces.
+AORC's `event_id` and MRMS's `storm_id` are different ID spaces (MRMS should
+have shipped with event_id directly, but doesn't yet — see the TEMPORARY
+block below). This script:
+  1. Translates MRMS storm_id -> event_id via events_original.csv, then joins
+     events on event_id.
   2. Aligns catchments by ID (inner join on divide_id / catchment strings).
   3. Writes a combined (event, time_step, catchment) NetCDF with variables
      from both sources.
 
-Output coordinates
-------------------
-  episode_id  (event,)   str     AORC/NWS episode ID
-  storm_id    (event,)   int32   MRMS internal storm index
-  n_steps     (event,)   int32   valid 15-min steps (minimum of both sources)
-  event_start (event,)   float64 step-0 time from AORC (minutes since 1970-01-01)
-  catchment   (catchment,) str   NextGen divide ID (intersection of both files)
-  latitude    (catchment,) f32
-  longitude   (catchment,) f32
+Output
+------
+  Coordinates:
+    event_id    (event,)     str     shared AORC/MRMS event ID
+    n_steps     (event,)     i32     valid 15-min steps (minimum of both sources)
+    event_start (event,)     f64     step-0 time from AORC (minutes since 1970-01-01)
+    catchment   (catchment,) str     NextGen divide ID (intersection of both files)
+    latitude    (catchment,) f32
+    longitude   (catchment,) f32
 
-Output variables
-----------------
-  TMP_2maboveground  (event, time_step, catchment)  f32  from AORC
-  PET                (event, time_step, catchment)  f32  from AORC
-  depth_mm_15min     (event, time_step, catchment)  f32  from MRMS
+  Variables:
+    TMP_2maboveground  (event, time_step, catchment)  f32  from AORC
+    PET                (event, time_step, catchment)  f32  from AORC
+    depth_mm_15min     (event, time_step, catchment)  f32  from MRMS
 
 Usage
 -----
     python engine/forcing/merge_15min.py \\
         --aorc     /path/to/events_15min.nc \\
         --mrms     /path/to/mrms_15min.nc \\
-        --manifest /path/to/events.csv \\
         --output   /path/to/forcing_15min.nc
-
-    # Customise the manifest join columns (defaults shown):
-    python engine/forcing/merge_15min.py ... \\
-        --episode-col episode_id --storm-col storm_index
 """
 
 import argparse
@@ -44,8 +40,14 @@ import netCDF4
 import numpy as np
 import pandas as pd
 
-
-_EPOCH = np.datetime64("1970-01-01T00:00", "m")
+# TEMPORARY: MRMS's aggregate_events.py writes `storm_id` (an internal storm
+# index) instead of `event_id` — this should be fixed upstream so the two
+# files share a real `event_id`. Until then, translate storm_id -> event_id
+# here using the original manifest's storm_index/event_ids crosswalk.
+_TEMP_MANIFEST = "data/events_original.csv"
+_TEMP_STORM_COL = "storm_index"
+_TEMP_EVENT_COL = "event_ids"
+##################
 
 
 def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
@@ -64,8 +66,8 @@ def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
         Object array of Python strings, shape (n,).
     """
     raw = ds.variables[name][:]
-    if hasattr(raw, "data"):
-        raw = raw.data
+    if isinstance(raw, np.ma.MaskedArray):
+        raw = raw.filled()
     out = np.empty(len(raw), dtype=object)
     for i, v in enumerate(raw):
         out[i] = str(v) if not isinstance(v, str) else v
@@ -83,61 +85,53 @@ def main() -> None:
                         help="AORC 15-min NC (output of to_events.py, events_15min.nc)")
     parser.add_argument("--mrms", required=True,
                         help="MRMS 15-min NC (output of aggregate_events.py)")
-    parser.add_argument("--manifest", required=True,
-                        help="CSV that links episode_id to storm_index")
     parser.add_argument("--output", required=True,
                         help="Output NetCDF path")
-    parser.add_argument("--episode-col", default="episode_id",
-                        help="Manifest column with AORC episode IDs (default: episode_id)")
-    parser.add_argument("--storm-col", default="storm_index",
-                        help="Manifest column with MRMS storm IDs (default: storm_index)")
     parser.add_argument("--complevel", type=int, default=4,
                         help="zlib compression level 1-9 (default: 4)")
     args = parser.parse_args()
-
-    # load manifest
-    mdf = pd.read_csv(args.manifest)
-    for col in (args.episode_col, args.storm_col):
-        if col not in mdf.columns:
-            sys.exit(f"Column '{col}' not found in {args.manifest}.\n"
-                     f"Available: {mdf.columns.tolist()}")
-    mdf = mdf.dropna(subset=[args.episode_col, args.storm_col])
-    mdf["_episode"] = mdf[args.episode_col].astype(int).astype(str)
-    mdf["_storm"] = mdf[args.storm_col].astype(int)
-    ep_to_storm = dict(zip(mdf["_episode"], mdf["_storm"]))
-    print(f"Manifest: {len(mdf)} pairs loaded "
-          f"({args.episode_col} <-> {args.storm_col})")
 
     # open source files
     nc_aorc = netCDF4.Dataset(args.aorc, "r")
     nc_mrms = netCDF4.Dataset(args.mrms, "r")
 
-    aorc_episode_ids = _load_str_var(nc_aorc, "event_id")
+    aorc_event_ids = _load_str_var(nc_aorc, "event_id")
     mrms_storm_ids = np.array(nc_mrms.variables["storm_id"][:], dtype=np.int32)
-    storm_to_mrms_idx = {int(sid): i for i, sid in enumerate(mrms_storm_ids)}
+
+    # TEMPORARY: translate MRMS storm_id -> event_id via the original manifest
+    # (see _TEMP_MANIFEST note above). Remove once aggregate_events.py writes
+    # event_id directly.
+    mdf = pd.read_csv(_TEMP_MANIFEST)
+    mdf = mdf.dropna(subset=[_TEMP_STORM_COL, _TEMP_EVENT_COL])
+    storm_to_event = dict(zip(
+        mdf[_TEMP_STORM_COL].astype(int),
+        mdf[_TEMP_EVENT_COL].astype(int).astype(str),
+    ))
+    mrms_event_ids = np.array(
+        [storm_to_event.get(int(sid)) for sid in mrms_storm_ids], dtype=object,
+    )
+    event_to_mrms_idx = {
+        eid: i for i, eid in enumerate(mrms_event_ids) if eid is not None
+    }
+    ##################
 
     # build aligned event list: iterate AORC order, keep events present in MRMS
-    aorc_indices, mrms_indices, episode_ids, storm_ids = [], [], [], []
+    aorc_indices, mrms_indices, event_ids = [], [], []
     skipped = 0
-    for i, eid in enumerate(aorc_episode_ids):
-        sid = ep_to_storm.get(eid)
-        if sid is None:
-            skipped += 1
-            continue
-        j = storm_to_mrms_idx.get(sid)
+    for i, eid in enumerate(aorc_event_ids):
+        j = event_to_mrms_idx.get(eid)
         if j is None:
             skipped += 1
             continue
         aorc_indices.append(i)
         mrms_indices.append(j)
-        episode_ids.append(eid)
-        storm_ids.append(sid)
+        event_ids.append(eid)
 
     n_events = len(aorc_indices)
     if n_events == 0:
-        sys.exit("No events matched between AORC and MRMS files via the manifest.")
+        sys.exit("No events matched between AORC and MRMS files on event_id.")
     print(f"Matched {n_events} events ({skipped} AORC events skipped — "
-          f"not in manifest or MRMS file)")
+          f"not present in MRMS file)")
 
     # align catchments: inner join, report drops from each side
     aorc_cats = _load_str_var(nc_aorc, "catchment")
@@ -188,13 +182,9 @@ def main() -> None:
     nc_out.createDimension("time_step", max_steps)
     nc_out.createDimension("catchment", n_catchments)
 
-    v = nc_out.createVariable("episode_id", str, ("event",))
-    v.long_name = "NWS episode ID"
-    v[:] = np.array(episode_ids, dtype=object)
-
-    v = nc_out.createVariable("storm_id", "i4", ("event",))
-    v.long_name = "MRMS internal storm index"
-    v[:] = np.array(storm_ids, dtype=np.int32)
+    v = nc_out.createVariable("event_id", str, ("event",))
+    v.long_name = "shared AORC/MRMS event ID"
+    v[:] = np.array(event_ids, dtype=object)
 
     v = nc_out.createVariable("n_steps", "i4", ("event",))
     v.long_name = "valid 15-min timesteps (min of AORC and MRMS coverage)"

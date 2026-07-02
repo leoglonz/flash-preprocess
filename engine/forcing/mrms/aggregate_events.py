@@ -1,22 +1,27 @@
-"""Aggregate per-storm MRMS 15-min NetCDF files into a single padded NetCDF.
+"""Aggregate per-storm MRMS 15-min NetCDFs into a single padded NetCDF.
 
-Reads all matching NC files from an input directory, stacks them into a
-single (event, time_step, catchment) dataset padded to the longest event,
-and writes one output NetCDF with:
+Reads all matching NC files from an input directory and stacks them into
+one (event, time_step, catchment) dataset padded to the longest event.
 
-  depth_mm_15min  (event, time_step, catchment)  float32, NaN outside valid range
-  storm_id        (event,)                        int32
-  n_steps         (event,)                        int32   actual valid timestep count
-  event_start     (event,)                        float64 time of step 0 (same units as source)
-  divide_id       (catchment,)                    str
+Output
+------
+  depth_mm_15min  (event, time_step, catchment)  f32     NaN outside valid range
+  storm_id        (event,)                       i32
+  n_steps         (event,)                       i32     actual valid timestep count
+  event_start     (event,)                       f64     time of step 0 (source units)
+  divide_id       (catchment,)                   str
 
-Downstream: slice depth_mm_15min[i, :n_steps[i], :] to get the unpadded event.
+  Downstream: slice depth_mm_15min[i, :n_steps[i], :] to unpad an event.
 
-Usage:
-    python engine/forcing/mrms/aggregate_events.py --input-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse/forcing_15min --output /Users/leoglonz/Desktop/noaa/data/upper_neuse/mrms_15min.nc
+Usage
+-----
+    python engine/forcing/mrms/aggregate_events.py \\
+        --input-dir /path/to/forcing_15min --output /path/to/mrms_15min.nc
 
     # Filter to storms listed in a manifest CSV (column: storm_index):
-    python engine/forcing/mrms/aggregate_events.py --input-dir /Users/leoglonz/Desktop/noaa/data/upper_neuse/forcing_15min --manifest /Users/leoglonz/Desktop/noaa/data/upper_neuse/events_original.csv --output /Users/leoglonz/Desktop/noaa/data/upper_neuse/mrms_15min.nc
+    python engine/forcing/mrms/aggregate_events.py \\
+        --input-dir /path/to/forcing_15min --manifest /path/to/events_original.csv \\
+        --output /path/to/mrms_15min.nc
 """
 
 import argparse
