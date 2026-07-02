@@ -73,9 +73,11 @@ def expand_upstream(
 
 
 def get_cell_weights(
-    raster: xr.Dataset, gdf: gpd.GeoDataFrame, wkt: str
+    raster: xr.Dataset,
+    gdf: gpd.GeoDataFrame,
+    wkt: str,
 ) -> pd.DataFrame:
-    """From CIROH-UA/NGIAB_data_preprocess;
+    """From CIROH-UA/NGIAB_data_preprocess.
 
     Get the cell weights (coverage) for each cell in a divide. Coverage is
     defined as the fraction (a float in [0,1]) of a raster cell that overlaps

@@ -1,4 +1,4 @@
-"""Subset a HydroFabric v2.2 AORC index to a specific catchment set.
+r"""Subset a HydroFabric v2.2 AORC index to a specific catchment set.
 
 The CONUS index (index_dict.pkl) maps each NextGen catchment to the AORC
 1km grid pixels (unstructured mesh) that fall inside it. This script filters
@@ -49,6 +49,7 @@ def _read_table(conn, sql):
 
 
 def filter_and_save(target_ids, conus_index_path, output_path):
+    """Filter the CONUS AORC index to `target_ids` and write it to `output_path`."""
     print("Loading CONUS index...")
     with open(conus_index_path, 'rb') as f:
         conus = pickle.load(f)
@@ -82,6 +83,7 @@ def filter_and_save(target_ids, conus_index_path, output_path):
 
 
 def main():
+    """Parse CLI args and run the AORC index subsetting."""
     parser = argparse.ArgumentParser(
         description="Subset the CONUS AORC index to a set of NextGen catchments.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -149,7 +151,7 @@ def main():
         raw = df_csv[args.csv_column].astype(str).tolist()
         seed_ids = {v if v.startswith('cat-') else f"cat-{v}" for v in raw}
         print(
-            f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})"
+            f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})",
         )
     else:
         print(f"No selection specified — using all divides in {args.hydrofabric}")
@@ -165,7 +167,7 @@ def main():
         graph = build_upstream_graph(args.hydrofabric)
         target_ids = expand_upstream(seed_ids, graph)
         print(
-            f"  {len(seed_ids)} -> {len(target_ids)} catchments after upstream expansion"
+            f"  {len(seed_ids)} -> {len(target_ids)} catchments after upstream expansion",
         )
     else:
         target_ids = seed_ids

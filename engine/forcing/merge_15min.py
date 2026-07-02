@@ -1,4 +1,4 @@
-"""Merge AORC and MRMS 15-min NetCDFs into a single combined forcing file.
+r"""Merge AORC and MRMS 15-min NetCDFs into a single combined forcing file.
 
 AORC's `event_id` and MRMS's `storm_id` are different ID spaces (MRMS should
 have shipped with event_id directly, but doesn't yet — see the TEMPORARY
@@ -87,7 +87,9 @@ def main() -> None:
         help="AORC 15-min NC (output of to_events.py, events_15min.nc)",
     )
     parser.add_argument(
-        "--mrms", required=True, help="MRMS 15-min NC (output of aggregate_events.py)"
+        "--mrms",
+        required=True,
+        help="MRMS 15-min NC (output of aggregate_events.py)",
     )
     parser.add_argument("--output", required=True, help="Output NetCDF path")
     parser.add_argument(
@@ -114,7 +116,7 @@ def main() -> None:
         zip(
             mdf[_TEMP_STORM_COL].astype(int),
             mdf[_TEMP_EVENT_COL].astype(int).astype(str),
-        )
+        ),
     )
     mrms_event_ids = np.array(
         [storm_to_event.get(int(sid)) for sid in mrms_storm_ids],
@@ -142,7 +144,7 @@ def main() -> None:
         sys.exit("No events matched between AORC and MRMS files on event_id.")
     print(
         f"Matched {n_events} events ({skipped} AORC events skipped — "
-        f"not present in MRMS file)"
+        f"not present in MRMS file)",
     )
 
     # align catchments: inner join, report drops from each side
@@ -158,12 +160,12 @@ def main() -> None:
     if only_aorc:
         print(
             f"  {len(only_aorc)} catchments in AORC but not MRMS (dropped): "
-            f"{only_aorc[:5]}{'...' if len(only_aorc) > 5 else ''}"
+            f"{only_aorc[:5]}{'...' if len(only_aorc) > 5 else ''}",
         )
     if only_mrms:
         print(
             f"  {len(only_mrms)} catchments in MRMS but not AORC (dropped): "
-            f"{only_mrms[:5]}{'...' if len(only_mrms) > 5 else ''}"
+            f"{only_mrms[:5]}{'...' if len(only_mrms) > 5 else ''}",
         )
     aorc_cat_idx = {c: i for i, c in enumerate(aorc_cats)}
     mrms_cat_idx = {c: i for i, c in enumerate(mrms_cats)}
@@ -172,7 +174,7 @@ def main() -> None:
     n_catchments = len(common)
     print(
         f"Catchments: {n_catchments} common "
-        f"(AORC: {len(aorc_cats)}, MRMS: {len(mrms_cats)})"
+        f"(AORC: {len(aorc_cats)}, MRMS: {len(mrms_cats)})",
     )
 
     # figure out max_steps (both sources are nominally 480, take the max)
@@ -262,7 +264,9 @@ def main() -> None:
 
     v_tmp = _make_var("TMP_2maboveground", "K", "Air temperature at 2 m (interpolated)")
     v_pet = _make_var(
-        "PET", "mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"
+        "PET",
+        "mm 15min-1",
+        "Penman-Monteith ET0 (15-min, uniform split)",
     )
     v_dep = _make_var("depth_mm_15min", "mm per 15 min", "MRMS precipitation depth")
 
@@ -286,7 +290,7 @@ def main() -> None:
     nc_out.close()
     print(f"Done -> {args.output}")
     print(
-        f"  Shape: ({n_events} events, {max_steps} time_steps, {n_catchments} catchments)"
+        f"  Shape: ({n_events} events, {max_steps} time_steps, {n_catchments} catchments)",
     )
 
 

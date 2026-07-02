@@ -1,4 +1,4 @@
-"""Build an area-weighted AORC index using exactextract conservative regridding.
+r"""Build an area-weighted AORC index using exactextract conservative regridding.
 
 Unlike the point-in-polygon approach in index_hf.py (equal weight for every
 pixel whose center falls inside a catchment), this script computes the
@@ -98,7 +98,7 @@ def build_aorc_grid() -> xr.Dataset:
     print(
         f"AORC grid: {AORC_NROWS} rows x {AORC_NCOLS} cols  "
         f"(lat {lat[-1]:.2f}N - {lat[0]:.2f}N, "
-        f"lon {lon[0]:.2f}E - {lon[-1]:.2f}E)"
+        f"lon {lon[0]:.2f}E - {lon[-1]:.2f}E)",
     )
     return grid
 
@@ -115,7 +115,7 @@ def compute_weights_parallel(gdf_4326, grid_ds, n_workers=None):
     chunks = np.array_split(gdf_4326, n_workers)
 
     print(
-        f"  Computing area weights ({len(gdf_4326)} catchments, {n_workers} workers)..."
+        f"  Computing area weights ({len(gdf_4326)} catchments, {n_workers} workers)...",
     )
 
     with multiprocessing.Pool(n_workers) as pool:
@@ -126,6 +126,7 @@ def compute_weights_parallel(gdf_4326, grid_ds, n_workers=None):
 
 
 def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
+    """Compute area-weighted AORC cell weights for `target_ids` and write to `output_path`."""
     # load catchment polygons, reproject to EPSG:4326 to match AORC grid
     print("Loading divides from hydrofabric...")
     conn = sqlite3.connect(hydrofabric_path)
@@ -145,7 +146,9 @@ def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
             print(f"    {m}")
 
     gdf = gpd.read_file(
-        hydrofabric_path, layer="divides", where=f"divide_id IN ({placeholders})"
+        hydrofabric_path,
+        layer="divides",
+        where=f"divide_id IN ({placeholders})",
     )
     gdf = gdf[['divide_id', 'geometry']].copy()
     gdf = gdf.to_crs("EPSG:4326")
@@ -179,6 +182,7 @@ def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
 
 
 def main():
+    """Parse CLI args and build the area-weighted AORC index."""
     parser = argparse.ArgumentParser(
         description="Build an area-weighted AORC catchment index via exactextract.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -200,7 +204,9 @@ def main():
 
     sel = parser.add_mutually_exclusive_group()
     sel.add_argument(
-        '--gpkg', default=None, help="Select all divides from this geopackage"
+        '--gpkg',
+        default=None,
+        help="Select all divides from this geopackage",
     )
     sel.add_argument(
         '--catchment-ids',
@@ -237,7 +243,7 @@ def main():
         raw = df_csv[args.csv_column].astype(str).tolist()
         seed_ids = {v if v.startswith('cat-') else f"cat-{v}" for v in raw}
         print(
-            f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})"
+            f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})",
         )
     else:
         print(f"No selection — using all divides in {args.hydrofabric}")

@@ -88,7 +88,7 @@ def spatial_subset_weighted(
     print(
         f"  Bbox: rows {r0}-{r1}, cols {c0}-{c1} "
         f"({r1 - r0 + 1} × {n_sub} = {(r1 - r0 + 1) * n_sub:,} pixels, "
-        f"was {4201 * 8401:,})"
+        f"was {4201 * 8401:,})",
     )
 
     ds_sub = ds.isel(latitude=slice(r0, r1 + 1), longitude=slice(c0, c1 + 1))
@@ -127,7 +127,7 @@ def spatial_subset_equal(
     print(
         f"  Bbox: rows {r0}-{r1}, cols {c0}-{c1} "
         f"({r1 - r0 + 1} × {c1 - c0 + 1} = {(r1 - r0 + 1) * (c1 - c0 + 1):,} pixels, "
-        f"was {4201 * 8401:,})"
+        f"was {4201 * 8401:,})",
     )
 
     ds_sub = ds.isel(latitude=slice(r0, r1 + 1), longitude=slice(c0, c1 + 1))
@@ -159,12 +159,14 @@ def build_weight_matrix(
         Shape (n_basins, n_pixels), float32.
     """
     rows = np.concatenate(
-        [np.full(len(c), i, dtype=np.int32) for i, c in enumerate(cell_ids_list)]
+        [np.full(len(c), i, dtype=np.int32) for i, c in enumerate(cell_ids_list)],
     )
     cols = np.concatenate(cell_ids_list).astype(np.int32)
     vals = np.concatenate([w / w.sum() for w in weights_list]).astype(np.float32)
     return csr_matrix(
-        (vals, (rows, cols)), shape=(n_basins, n_pixels), dtype=np.float32
+        (vals, (rows, cols)),
+        shape=(n_basins, n_pixels),
+        dtype=np.float32,
     )
 
 

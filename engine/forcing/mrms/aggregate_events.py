@@ -1,4 +1,4 @@
-"""Aggregate per-storm MRMS 15-min NetCDFs into a single padded NetCDF.
+r"""Aggregate per-storm MRMS 15-min NetCDFs into a single padded NetCDF.
 
 Reads all matching NC files from an input directory and stacks them into
 one (event, time_step, catchment) dataset padded to the longest event.
@@ -49,7 +49,7 @@ def _scan_files(input_dir: str, pattern: str, allowed_ids: set | None) -> list[d
         m = _STORM_ID_RE.search(os.path.basename(p))
         if not m:
             print(
-                f"  WARNING: cannot parse storm ID from {os.path.basename(p)}, skipping"
+                f"  WARNING: cannot parse storm ID from {os.path.basename(p)}, skipping",
             )
             continue
         sid = int(m.group(1))
@@ -83,10 +83,11 @@ def _read_meta(records: list[dict]) -> tuple[np.ndarray, int, np.ndarray]:
         if catchments_ref is None:
             catchments_ref = np.array(cats, dtype=object)
         elif len(cats) != len(catchments_ref) or not np.array_equal(
-            cats, catchments_ref
+            cats,
+            catchments_ref,
         ):
             print(
-                f"  WARNING: {rec['path']} has different catchments — results may be wrong"
+                f"  WARNING: {rec['path']} has different catchments — results may be wrong",
             )
 
         ds.close()
@@ -95,13 +96,16 @@ def _read_meta(records: list[dict]) -> tuple[np.ndarray, int, np.ndarray]:
 
 
 def main():
+    """Parse CLI args and aggregate per-storm MRMS files into a padded NetCDF."""
     parser = argparse.ArgumentParser(
         description="Aggregate per-storm MRMS 15-min NC files into one padded NetCDF.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument(
-        "--input-dir", required=True, help="Directory containing per-storm NC files"
+        "--input-dir",
+        required=True,
+        help="Directory containing per-storm NC files",
     )
     parser.add_argument("--output", required=True, help="Output NetCDF path")
     parser.add_argument(
@@ -176,7 +180,7 @@ def main():
     n_events = len(records)
     n_catchments = len(catchments)
     print(
-        f"Events: {n_events}  |  max timesteps: {max_steps}  |  catchments: {n_catchments}"
+        f"Events: {n_events}  |  max timesteps: {max_steps}  |  catchments: {n_catchments}",
     )
 
     # read time units from first file
@@ -243,7 +247,7 @@ def main():
     nc_out.close()
     print(f"Done -> {args.output}")
     print(
-        f"  Shape: ({n_events} events, {max_steps} max steps, {n_catchments} catchments)"
+        f"  Shape: ({n_events} events, {max_steps} max steps, {n_catchments} catchments)",
     )
 
 

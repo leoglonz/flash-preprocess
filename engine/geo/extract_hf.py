@@ -1,4 +1,4 @@
-"""Extract and subset the CONUS NextGen HydroFabric for flash-flood event sims.
+r"""Extract and subset the CONUS NextGen HydroFabric for flash-flood event sims.
 
 Reads divide IDs from a CSV column (or an explicit list), subsets the
 HydroFabric to those catchments plus their full upstream network, derives
@@ -212,15 +212,19 @@ def build_topology_json(
 
 
 def main():
+    """Parse CLI args and run the HydroFabric extraction."""
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument(
-        '--csv', type=Path, help='CSV file containing a column of divide IDs'
+        '--csv',
+        type=Path,
+        help='CSV file containing a column of divide IDs',
     )
     src.add_argument(
         '--divide-ids',
@@ -234,10 +238,16 @@ def main():
         help="Column in --csv holding divide IDs (default: %(default)s)",
     )
     parser.add_argument(
-        '--gpkg', type=Path, required=True, help='Path to conus_nextgen.gpkg'
+        '--gpkg',
+        type=Path,
+        required=True,
+        help='Path to conus_nextgen.gpkg',
     )
     parser.add_argument(
-        '--output-dir', type=Path, required=True, help='Output directory'
+        '--output-dir',
+        type=Path,
+        required=True,
+        help='Output directory',
     )
     parser.add_argument(
         '--upstream',
@@ -285,7 +295,7 @@ def main():
             layer='divides',
             where=f"divide_id IN ({','.join(repr(c) for c in cat_ids)})",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 -- driver-specific error type varies by backend (pyogrio/fiona)
         log.warning('WHERE clause failed, falling back to full read + filter')
         gdf = gpd.read_file(gpkg_path, layer='divides')
         gdf = gdf[gdf['divide_id'].isin(set(cat_ids))].reset_index(drop=True)

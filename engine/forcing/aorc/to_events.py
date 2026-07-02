@@ -1,4 +1,4 @@
-"""Slice pre-extracted AORC forcing into per-event windows.
+r"""Slice pre-extracted AORC forcing into per-event windows.
 
 Reads a pre-extracted AORC NetCDF (output of extract.py) and, for each event
 in the events CSV, writes two aggregated output files. Events whose time
@@ -70,12 +70,12 @@ def _load_forcing(nc_path: str) -> tuple[np.ndarray, dict, dict[str, np.ndarray]
     nc = netCDF4.Dataset(nc_path, 'r')
     time_dt = _EPOCH + nc.variables['time'][:].astype('timedelta64[m]')
     cat_ids = np.array(nc.variables['catchment'][:])
-    meta = dict(
-        n_basins=len(cat_ids),
-        station_ids=cat_ids,
-        cat_lats=np.array(nc.variables['latitude'][:], dtype=np.float32),
-        cat_lons=np.array(nc.variables['longitude'][:], dtype=np.float32),
-    )
+    meta = {
+        'n_basins': len(cat_ids),
+        'station_ids': cat_ids,
+        'cat_lats': np.array(nc.variables['latitude'][:], dtype=np.float32),
+        'cat_lons': np.array(nc.variables['longitude'][:], dtype=np.float32),
+    }
     skip = {'time', 'catchment', 'latitude', 'longitude'}
     data = {v: nc.variables[v][:] for v in nc.variables if v not in skip}
     nc.close()
@@ -89,7 +89,7 @@ def _event_masks(
     """Return boolean masks for the antecedent and event windows."""
     ant_start = centroid - np.timedelta64(int(_ANTECEDENT_DAYS * 24 * 60), 'm')
     ant_end = (centroid - np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')).astype(
-        'datetime64[h]'
+        'datetime64[h]',
     )
     evt_end_15m = (
         centroid + np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')
@@ -179,13 +179,16 @@ def _create_output_nc(
 
 
 def main() -> None:
+    """Parse CLI args and slice AORC forcing into per-event NetCDFs."""
     parser = argparse.ArgumentParser(
         description="Produce aggregated per-event AORC forcing NetCDFs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument(
-        '--events', required=True, help="CSV file with one row per event"
+        '--events',
+        required=True,
+        help="CSV file with one row per event",
     )
     parser.add_argument(
         '--forcing',
@@ -193,7 +196,9 @@ def main() -> None:
         help="Pre-extracted AORC NetCDF (output of extract.py)",
     )
     parser.add_argument(
-        '--output-dir', required=True, help="Directory for output NetCDF files"
+        '--output-dir',
+        required=True,
+        help="Directory for output NetCDF files",
     )
     args = parser.parse_args()
 
@@ -205,14 +210,14 @@ def main() -> None:
     df['_centroid'] = df[_BEGIN_COL] + (df[_END_COL] - df[_BEGIN_COL]) / 2
     df['_event_id'] = df[_EVENT_ID_COL].astype(int).astype(str)
     print(
-        f"Events: {len(df)}  ({df[_BEGIN_COL].min().date()} - {df[_END_COL].max().date()})"
+        f"Events: {len(df)}  ({df[_BEGIN_COL].min().date()} - {df[_END_COL].max().date()})",
     )
 
     print(f"Loading forcing: {args.forcing}")
     time_dt, meta, data = _load_forcing(args.forcing)
     print(
         f"  {meta['n_basins']} catchments  |  {len(time_dt)} hours  "
-        f"({str(time_dt[0])[:16]} - {str(time_dt[-1])[:16]})"
+        f"({str(time_dt[0])[:16]} - {str(time_dt[-1])[:16]})",
     )
 
     # Pre-pass: filter to events with data in the forcing file
@@ -308,13 +313,14 @@ def main() -> None:
             (time_evt[0] - _EPOCH) / np.timedelta64(1, 'm'),
         )
         nc_15min.variables['TMP_2maboveground'][i, :n_15min, :] = tmp_15min[
-            :, :n_15min
+            :,
+            :n_15min,
         ].T
         nc_15min.variables['PET'][i, :n_15min, :] = pet_15min[:, :n_15min].T
 
         print(
             f"  [{event_id}]  hourly: {n_ant} steps  |  "
-            f"15 min: {n_15min} steps  |  {_time.time() - t0:.1f}s"
+            f"15 min: {n_15min} steps  |  {_time.time() - t0:.1f}s",
         )
 
     nc_hourly.close()

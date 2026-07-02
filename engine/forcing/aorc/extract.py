@@ -1,4 +1,4 @@
-"""Extract AORC forcing data for a set of NextGen catchments.
+r"""Extract AORC forcing data for a set of NextGen catchments.
 
 Reads the NOAA AORC v1.1 1km zarr from S3 (hourly, 1979-2025), spatially
 averages each variable over catchment pixels, and optionally disaggregates
@@ -85,7 +85,7 @@ def round_to_nearest_15min(dt_str: str) -> np.datetime64:
     total_minutes = dt.hour * 60 + dt.minute + dt.second / 60
     rounded = int(total_minutes / 15 + 0.5) * 15
     dt_r = dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
-        minutes=rounded
+        minutes=rounded,
     )
     return np.datetime64(dt_r, 'm')
 
@@ -110,11 +110,12 @@ def parse_window(window_str: str) -> int:
     elif window_str.endswith('min'):
         return int(window_str[:-3])
     raise ValueError(
-        f"Unrecognised window format {window_str!r}. Use e.g. '5d', '120h', '7200min'."
+        f"Unrecognised window format {window_str!r}. Use e.g. '5d', '120h', '7200min'.",
     )
 
 
 def main():
+    """Parse CLI args and run the AORC extraction."""
     parser = argparse.ArgumentParser(
         description="Extract AORC forcing data to catchments.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -124,7 +125,9 @@ def main():
     time_grp = parser.add_mutually_exclusive_group(required=True)
     time_grp.add_argument('--year', type=int, help="Full calendar year (e.g. 2022)")
     time_grp.add_argument(
-        '--start', metavar='DATETIME', help="Start of range, ISO 8601. Pair with --end."
+        '--start',
+        metavar='DATETIME',
+        help="Start of range, ISO 8601. Pair with --end.",
     )
     time_grp.add_argument(
         '--center',
