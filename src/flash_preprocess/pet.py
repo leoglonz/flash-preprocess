@@ -44,7 +44,7 @@ def penman_monteith_pet(
     """
     spfh = np.where(spfh > 0.02, spfh / 1000.0, spfh)
 
-    P = pres / 1000.0 
+    P = pres / 1000.0
     u2 = np.sqrt(ugrd_10m**2 + vgrd_10m**2) * 4.87 / np.log(67.8 * 10 - 5.42)
     gamma = 0.000665 * P
 
@@ -54,7 +54,7 @@ def penman_monteith_pet(
 
     Rs = dswrf * 0.0036
     Rl_down = dlwrf * 0.0036
-    
+
     sigma = 4.903e-9 / 24.0
     Rl_up = eps_s * sigma * (temp + 273.15) ** 4
     Rn = (1 - albedo) * Rs + (Rl_down - Rl_up)

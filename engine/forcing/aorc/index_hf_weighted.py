@@ -49,7 +49,12 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from flash_preprocess.utils import build_upstream_graph, expand_upstream, get_cell_weights, HF_PATH_DEFAULT
+from flash_preprocess.utils import (
+    build_upstream_graph,
+    expand_upstream,
+    get_cell_weights,
+    HF_PATH_DEFAULT,
+)
 
 
 # Default output path for the weighted index dictionary.
@@ -90,9 +95,11 @@ def build_aorc_grid() -> xr.Dataset:
         {'dummy': (['y', 'x'], dummy)},
         coords={'y': lat, 'x': lon},
     )
-    print(f"AORC grid: {AORC_NROWS} rows x {AORC_NCOLS} cols  "
-          f"(lat {lat[-1]:.2f}N - {lat[0]:.2f}N, "
-          f"lon {lon[0]:.2f}E - {lon[-1]:.2f}E)")
+    print(
+        f"AORC grid: {AORC_NROWS} rows x {AORC_NCOLS} cols  "
+        f"(lat {lat[-1]:.2f}N - {lat[0]:.2f}N, "
+        f"lon {lon[0]:.2f}E - {lon[-1]:.2f}E)"
+    )
     return grid
 
 
@@ -107,8 +114,9 @@ def compute_weights_parallel(gdf_4326, grid_ds, n_workers=None):
     wkt = gdf_4326.crs.to_wkt()
     chunks = np.array_split(gdf_4326, n_workers)
 
-    print(f"  Computing area weights ({len(gdf_4326)} catchments, "
-          f"{n_workers} workers)...")
+    print(
+        f"  Computing area weights ({len(gdf_4326)} catchments, {n_workers} workers)..."
+    )
 
     with multiprocessing.Pool(n_workers) as pool:
         args = [(grid_ds, chunk, wkt) for chunk in chunks]
@@ -119,12 +127,13 @@ def compute_weights_parallel(gdf_4326, grid_ds, n_workers=None):
 
 def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
     # load catchment polygons, reproject to EPSG:4326 to match AORC grid
-    print(f"Loading divides from hydrofabric...")
+    print("Loading divides from hydrofabric...")
     conn = sqlite3.connect(hydrofabric_path)
     id_list = sorted(target_ids)
     placeholders = ','.join(f"'{c}'" for c in id_list)
     df = pd.read_sql(
-        f"SELECT divide_id FROM divides WHERE divide_id IN ({placeholders})", conn
+        f"SELECT divide_id FROM divides WHERE divide_id IN ({placeholders})",
+        conn,
     )
     conn.close()
 
@@ -135,8 +144,9 @@ def build_and_save(target_ids, grid_ds, hydrofabric_path, output_path):
         for m in missing[:10]:
             print(f"    {m}")
 
-    gdf = gpd.read_file(hydrofabric_path, layer="divides",
-                        where=f"divide_id IN ({placeholders})")
+    gdf = gpd.read_file(
+        hydrofabric_path, layer="divides", where=f"divide_id IN ({placeholders})"
+    )
     gdf = gdf[['divide_id', 'geometry']].copy()
     gdf = gdf.to_crs("EPSG:4326")
     print(f"  {len(gdf)} catchments loaded, reprojected to EPSG:4326")
@@ -176,21 +186,41 @@ def main():
     )
     parser.add_argument('--hydrofabric', default=HF_PATH_DEFAULT)
     parser.add_argument('--output', default=OUT_DEFAULT)
-    parser.add_argument('--upstream', action='store_true',
-                        help="Expand selection to all upstream catchments")
-    parser.add_argument('--workers', type=int, default=None,
-                        help="Parallel workers for weight computation (default: cpu_count-1)")
+    parser.add_argument(
+        '--upstream',
+        action='store_true',
+        help="Expand selection to all upstream catchments",
+    )
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=None,
+        help="Parallel workers for weight computation (default: cpu_count-1)",
+    )
 
     sel = parser.add_mutually_exclusive_group()
-    sel.add_argument('--gpkg', default=None,
-                     help="Select all divides from this geopackage")
-    sel.add_argument('--catchment-ids', nargs='+', metavar='ID',
-                     help="Explicit catchment IDs, e.g. cat-100 cat-200")
-    sel.add_argument('--csv', default=None, metavar='PATH',
-                     help="CSV file with catchment IDs in a column")
-    parser.add_argument('--csv-column', default="gage_cat-id", metavar="COL",
-                        help="Column name in --csv that contains catchment IDs "
-                             "(default: %(default)s). Bare integers are prefixed with 'cat-'.")
+    sel.add_argument(
+        '--gpkg', default=None, help="Select all divides from this geopackage"
+    )
+    sel.add_argument(
+        '--catchment-ids',
+        nargs='+',
+        metavar='ID',
+        help="Explicit catchment IDs, e.g. cat-100 cat-200",
+    )
+    sel.add_argument(
+        '--csv',
+        default=None,
+        metavar='PATH',
+        help="CSV file with catchment IDs in a column",
+    )
+    parser.add_argument(
+        '--csv-column',
+        default="gage_cat-id",
+        metavar="COL",
+        help="Column name in --csv that contains catchment IDs "
+        "(default: %(default)s). Bare integers are prefixed with 'cat-'.",
+    )
 
     args = parser.parse_args()
 
@@ -206,7 +236,9 @@ def main():
         df_csv = pd.read_csv(args.csv)
         raw = df_csv[args.csv_column].astype(str).tolist()
         seed_ids = {v if v.startswith('cat-') else f"cat-{v}" for v in raw}
-        print(f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})")
+        print(
+            f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})"
+        )
     else:
         print(f"No selection — using all divides in {args.hydrofabric}")
         conn = sqlite3.connect(args.hydrofabric)

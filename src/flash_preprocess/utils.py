@@ -44,7 +44,8 @@ def build_upstream_graph(hf_path: str) -> dict[str, list[str]]:
 
 
 def expand_upstream(
-    seed_cats: list[str] | set[str], upstream_graph: dict[str, list[str]]
+    seed_cats: list[str] | set[str],
+    upstream_graph: dict[str, list[str]],
 ) -> set[str]:
     """BFS from seed catchments to collect all upstream catchment IDs.
 
@@ -71,7 +72,9 @@ def expand_upstream(
     return visited
 
 
-def get_cell_weights(raster: xr.Dataset, gdf: gpd.GeoDataFrame, wkt: str) -> pd.DataFrame:
+def get_cell_weights(
+    raster: xr.Dataset, gdf: gpd.GeoDataFrame, wkt: str
+) -> pd.DataFrame:
     """From CIROH-UA/NGIAB_data_preprocess;
 
     Get the cell weights (coverage) for each cell in a divide. Coverage is
@@ -100,7 +103,12 @@ def get_cell_weights(raster: xr.Dataset, gdf: gpd.GeoDataFrame, wkt: str) -> pd.
     ymax = max(raster.y)
     data_vars = list(raster.data_vars)
     rastersource = NumPyRasterSource(
-        raster[data_vars[0]], srs_wkt=wkt, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax
+        raster[data_vars[0]],
+        srs_wkt=wkt,
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
     )
     output: pd.DataFrame = exact_extract(
         rastersource,

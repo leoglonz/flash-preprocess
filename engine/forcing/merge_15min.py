@@ -81,14 +81,21 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--aorc", required=True,
-                        help="AORC 15-min NC (output of to_events.py, events_15min.nc)")
-    parser.add_argument("--mrms", required=True,
-                        help="MRMS 15-min NC (output of aggregate_events.py)")
-    parser.add_argument("--output", required=True,
-                        help="Output NetCDF path")
-    parser.add_argument("--complevel", type=int, default=4,
-                        help="zlib compression level 1-9 (default: 4)")
+    parser.add_argument(
+        "--aorc",
+        required=True,
+        help="AORC 15-min NC (output of to_events.py, events_15min.nc)",
+    )
+    parser.add_argument(
+        "--mrms", required=True, help="MRMS 15-min NC (output of aggregate_events.py)"
+    )
+    parser.add_argument("--output", required=True, help="Output NetCDF path")
+    parser.add_argument(
+        "--complevel",
+        type=int,
+        default=4,
+        help="zlib compression level 1-9 (default: 4)",
+    )
     args = parser.parse_args()
 
     # open source files
@@ -103,12 +110,15 @@ def main() -> None:
     # event_id directly.
     mdf = pd.read_csv(_TEMP_MANIFEST)
     mdf = mdf.dropna(subset=[_TEMP_STORM_COL, _TEMP_EVENT_COL])
-    storm_to_event = dict(zip(
-        mdf[_TEMP_STORM_COL].astype(int),
-        mdf[_TEMP_EVENT_COL].astype(int).astype(str),
-    ))
+    storm_to_event = dict(
+        zip(
+            mdf[_TEMP_STORM_COL].astype(int),
+            mdf[_TEMP_EVENT_COL].astype(int).astype(str),
+        )
+    )
     mrms_event_ids = np.array(
-        [storm_to_event.get(int(sid)) for sid in mrms_storm_ids], dtype=object,
+        [storm_to_event.get(int(sid)) for sid in mrms_storm_ids],
+        dtype=object,
     )
     event_to_mrms_idx = {
         eid: i for i, eid in enumerate(mrms_event_ids) if eid is not None
@@ -130,8 +140,10 @@ def main() -> None:
     n_events = len(aorc_indices)
     if n_events == 0:
         sys.exit("No events matched between AORC and MRMS files on event_id.")
-    print(f"Matched {n_events} events ({skipped} AORC events skipped — "
-          f"not present in MRMS file)")
+    print(
+        f"Matched {n_events} events ({skipped} AORC events skipped — "
+        f"not present in MRMS file)"
+    )
 
     # align catchments: inner join, report drops from each side
     aorc_cats = _load_str_var(nc_aorc, "catchment")
@@ -144,18 +156,24 @@ def main() -> None:
     only_aorc = sorted(aorc_set - mrms_set)
     only_mrms = sorted(mrms_set - aorc_set)
     if only_aorc:
-        print(f"  {len(only_aorc)} catchments in AORC but not MRMS (dropped): "
-              f"{only_aorc[:5]}{'...' if len(only_aorc) > 5 else ''}")
+        print(
+            f"  {len(only_aorc)} catchments in AORC but not MRMS (dropped): "
+            f"{only_aorc[:5]}{'...' if len(only_aorc) > 5 else ''}"
+        )
     if only_mrms:
-        print(f"  {len(only_mrms)} catchments in MRMS but not AORC (dropped): "
-              f"{only_mrms[:5]}{'...' if len(only_mrms) > 5 else ''}")
+        print(
+            f"  {len(only_mrms)} catchments in MRMS but not AORC (dropped): "
+            f"{only_mrms[:5]}{'...' if len(only_mrms) > 5 else ''}"
+        )
     aorc_cat_idx = {c: i for i, c in enumerate(aorc_cats)}
     mrms_cat_idx = {c: i for i, c in enumerate(mrms_cats)}
     aorc_ci = np.array([aorc_cat_idx[c] for c in common])
     mrms_ci = np.array([mrms_cat_idx[c] for c in common])
     n_catchments = len(common)
-    print(f"Catchments: {n_catchments} common "
-          f"(AORC: {len(aorc_cats)}, MRMS: {len(mrms_cats)})")
+    print(
+        f"Catchments: {n_catchments} common "
+        f"(AORC: {len(aorc_cats)}, MRMS: {len(mrms_cats)})"
+    )
 
     # figure out max_steps (both sources are nominally 480, take the max)
     aorc_max = nc_aorc.dimensions["time_step"].size
@@ -211,6 +229,7 @@ def main() -> None:
 
     chunk_e = min(n_events, 16)
     chunk_c = min(n_catchments, 64)
+
     def _make_var(name: str, units: str, long_name: str) -> netCDF4.Variable:
         """Create a compressed (event, time_step, catchment) float32 variable.
 
@@ -229,8 +248,12 @@ def main() -> None:
             Newly created variable, pre-filled with NaN.
         """
         nv = nc_out.createVariable(
-            name, "f4", ("event", "time_step", "catchment"),
-            fill_value=np.nan, zlib=True, complevel=args.complevel,
+            name,
+            "f4",
+            ("event", "time_step", "catchment"),
+            fill_value=np.nan,
+            zlib=True,
+            complevel=args.complevel,
             chunksizes=(chunk_e, max_steps, chunk_c),
         )
         nv.units = units
@@ -238,7 +261,9 @@ def main() -> None:
         return nv
 
     v_tmp = _make_var("TMP_2maboveground", "K", "Air temperature at 2 m (interpolated)")
-    v_pet = _make_var("PET", "mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)")
+    v_pet = _make_var(
+        "PET", "mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"
+    )
     v_dep = _make_var("depth_mm_15min", "mm per 15 min", "MRMS precipitation depth")
 
     print(f"Writing {n_events} events ...")
@@ -260,7 +285,9 @@ def main() -> None:
     nc_mrms.close()
     nc_out.close()
     print(f"Done -> {args.output}")
-    print(f"  Shape: ({n_events} events, {max_steps} time_steps, {n_catchments} catchments)")
+    print(
+        f"  Shape: ({n_events} events, {max_steps} time_steps, {n_catchments} catchments)"
+    )
 
 
 if __name__ == "__main__":

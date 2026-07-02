@@ -83,24 +83,29 @@ def _load_forcing(nc_path: str) -> tuple[np.ndarray, dict, dict[str, np.ndarray]
 
 
 def _event_masks(
-    centroid: np.datetime64, time_dt: np.ndarray
+    centroid: np.datetime64,
+    time_dt: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.datetime64, int]:
     """Return boolean masks for the antecedent and event windows."""
     ant_start = centroid - np.timedelta64(int(_ANTECEDENT_DAYS * 24 * 60), 'm')
-    ant_end = (centroid - np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')
-               ).astype('datetime64[h]')
-    evt_end_15m = (centroid + np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')
-                   ).astype('datetime64[m]')
+    ant_end = (centroid - np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')).astype(
+        'datetime64[h]'
+    )
+    evt_end_15m = (
+        centroid + np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')
+    ).astype('datetime64[m]')
     evt_end_h = evt_end_15m.astype('datetime64[h]') + np.timedelta64(1, 'h')
     n_15min = min(
         int((evt_end_15m - ant_end.astype('datetime64[m]')) / np.timedelta64(15, 'm')),
         _MAX_15MIN,
     )
 
-    ant_mask = (time_dt >= ant_start.astype('datetime64[m]')) & \
-               (time_dt < ant_end.astype('datetime64[m]'))
-    evt_mask = (time_dt >= ant_end.astype('datetime64[m]')) & \
-               (time_dt <= evt_end_h.astype('datetime64[m]'))
+    ant_mask = (time_dt >= ant_start.astype('datetime64[m]')) & (
+        time_dt < ant_end.astype('datetime64[m]')
+    )
+    evt_mask = (time_dt >= ant_end.astype('datetime64[m]')) & (
+        time_dt <= evt_end_h.astype('datetime64[m]')
+    )
 
     return ant_mask, evt_mask, ant_end, n_15min
 
@@ -159,8 +164,12 @@ def _create_output_nc(
     chunk_c = min(n_basins, 64)
     for vname, attrs in data_vars.items():
         nv = nc.createVariable(
-            vname, 'f4', ('event', 'time_step', 'catchment'),
-            fill_value=np.nan, zlib=True, complevel=4,
+            vname,
+            'f4',
+            ('event', 'time_step', 'catchment'),
+            fill_value=np.nan,
+            zlib=True,
+            complevel=4,
             chunksizes=(chunk_e, max_steps, chunk_c),
         )
         for k, val in attrs.items():
@@ -175,12 +184,17 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument('--events', required=True,
-                        help="CSV file with one row per event")
-    parser.add_argument('--forcing', required=True,
-                        help="Pre-extracted AORC NetCDF (output of extract.py)")
-    parser.add_argument('--output-dir', required=True,
-                        help="Directory for output NetCDF files")
+    parser.add_argument(
+        '--events', required=True, help="CSV file with one row per event"
+    )
+    parser.add_argument(
+        '--forcing',
+        required=True,
+        help="Pre-extracted AORC NetCDF (output of extract.py)",
+    )
+    parser.add_argument(
+        '--output-dir', required=True, help="Directory for output NetCDF files"
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -190,12 +204,16 @@ def main() -> None:
     df = df.dropna(subset=[_EVENT_ID_COL, _BEGIN_COL, _END_COL]).reset_index(drop=True)
     df['_centroid'] = df[_BEGIN_COL] + (df[_END_COL] - df[_BEGIN_COL]) / 2
     df['_event_id'] = df[_EVENT_ID_COL].astype(int).astype(str)
-    print(f"Events: {len(df)}  ({df[_BEGIN_COL].min().date()} - {df[_END_COL].max().date()})")
+    print(
+        f"Events: {len(df)}  ({df[_BEGIN_COL].min().date()} - {df[_END_COL].max().date()})"
+    )
 
     print(f"Loading forcing: {args.forcing}")
     time_dt, meta, data = _load_forcing(args.forcing)
-    print(f"  {meta['n_basins']} catchments  |  {len(time_dt)} hours  "
-          f"({str(time_dt[0])[:16]} - {str(time_dt[-1])[:16]})")
+    print(
+        f"  {meta['n_basins']} catchments  |  {len(time_dt)} hours  "
+        f"({str(time_dt[0])[:16]} - {str(time_dt[-1])[:16]})"
+    )
 
     # Pre-pass: filter to events with data in the forcing file
     valid_rows, skipped = [], 0
@@ -218,18 +236,33 @@ def main() -> None:
     min15_path = output_dir / 'aorc_15min.nc'
 
     nc_hourly = _create_output_nc(
-        hourly_path, n_events, _MAX_HOURLY, meta,
+        hourly_path,
+        n_events,
+        _MAX_HOURLY,
+        meta,
         data_vars={
             'APCP_surface': {'units': 'kg m-2', 'long_name': 'Precipitation'},
             'TMP_2maboveground': {'units': 'K', 'long_name': 'Air temperature at 2 m'},
-            'PET': {'units': 'mm h-1', 'long_name': 'Penman-Monteith ET0 (FAO-56 hourly)'},
+            'PET': {
+                'units': 'mm h-1',
+                'long_name': 'Penman-Monteith ET0 (FAO-56 hourly)',
+            },
         },
     )
     nc_15min = _create_output_nc(
-        min15_path, n_events, _MAX_15MIN, meta,
+        min15_path,
+        n_events,
+        _MAX_15MIN,
+        meta,
         data_vars={
-            'TMP_2maboveground': {'units': 'K', 'long_name': 'Air temperature at 2 m (interpolated)'},
-            'PET': {'units': 'mm 15min-1', 'long_name': 'Penman-Monteith ET0 (15-min, uniform split)'},
+            'TMP_2maboveground': {
+                'units': 'K',
+                'long_name': 'Air temperature at 2 m (interpolated)',
+            },
+            'PET': {
+                'units': 'mm 15min-1',
+                'long_name': 'Penman-Monteith ET0 (15-min, uniform split)',
+            },
         },
     )
 
@@ -252,33 +285,41 @@ def main() -> None:
         nc_hourly.variables['event_id'][i] = event_id
         nc_hourly.variables['n_steps'][i] = n_ant
         nc_hourly.variables['event_start'][i] = float(
-            (time_ant[0] - _EPOCH) / np.timedelta64(1, 'm')
+            (time_ant[0] - _EPOCH) / np.timedelta64(1, 'm'),
         )
         nc_hourly.variables['APCP_surface'][i, :n_ant, :] = vd_ant['APCP_surface'].T
-        nc_hourly.variables['TMP_2maboveground'][i, :n_ant, :] = vd_ant['TMP_2maboveground'].T
+        nc_hourly.variables['TMP_2maboveground'][i, :n_ant, :] = vd_ant[
+            'TMP_2maboveground'
+        ].T
         nc_hourly.variables['PET'][i, :n_ant, :] = pet_ant.T
 
         vd_evt = {k: v[:, evt_mask] for k, v in data.items()}
         pet_evt = _compute_pet(vd_evt)
         tmp_15min, _ = disaggregate_to_15min(
-            vd_evt['TMP_2maboveground'], 'TMP_2maboveground', time_evt
+            vd_evt['TMP_2maboveground'],
+            'TMP_2maboveground',
+            time_evt,
         )
         pet_15min = np.repeat(pet_evt / 4.0, 4, axis=1)
 
         nc_15min.variables['event_id'][i] = event_id
         nc_15min.variables['n_steps'][i] = n_15min
         nc_15min.variables['event_start'][i] = float(
-            (time_evt[0] - _EPOCH) / np.timedelta64(1, 'm')
+            (time_evt[0] - _EPOCH) / np.timedelta64(1, 'm'),
         )
-        nc_15min.variables['TMP_2maboveground'][i, :n_15min, :] = tmp_15min[:, :n_15min].T
+        nc_15min.variables['TMP_2maboveground'][i, :n_15min, :] = tmp_15min[
+            :, :n_15min
+        ].T
         nc_15min.variables['PET'][i, :n_15min, :] = pet_15min[:, :n_15min].T
 
-        print(f"  [{event_id}]  hourly: {n_ant} steps  |  "
-              f"15 min: {n_15min} steps  |  {_time.time()-t0:.1f}s")
+        print(
+            f"  [{event_id}]  hourly: {n_ant} steps  |  "
+            f"15 min: {n_15min} steps  |  {_time.time() - t0:.1f}s"
+        )
 
     nc_hourly.close()
     nc_15min.close()
-    print(f"\nDone - {n_events} events in {_time.time()-t_total:.1f}s")
+    print(f"\nDone - {n_events} events in {_time.time() - t_total:.1f}s")
     print(f"  {hourly_path}")
     print(f"  {min15_path}")
 

@@ -48,7 +48,9 @@ def _scan_files(input_dir: str, pattern: str, allowed_ids: set | None) -> list[d
     for p in paths:
         m = _STORM_ID_RE.search(os.path.basename(p))
         if not m:
-            print(f"  WARNING: cannot parse storm ID from {os.path.basename(p)}, skipping")
+            print(
+                f"  WARNING: cannot parse storm ID from {os.path.basename(p)}, skipping"
+            )
             continue
         sid = int(m.group(1))
         if allowed_ids is not None and sid not in allowed_ids:
@@ -80,8 +82,12 @@ def _read_meta(records: list[dict]) -> tuple[np.ndarray, int, np.ndarray]:
         cats = ds.variables['divide_id'][:]
         if catchments_ref is None:
             catchments_ref = np.array(cats, dtype=object)
-        elif len(cats) != len(catchments_ref) or not np.array_equal(cats, catchments_ref):
-            print(f"  WARNING: {rec['path']} has different catchments — results may be wrong")
+        elif len(cats) != len(catchments_ref) or not np.array_equal(
+            cats, catchments_ref
+        ):
+            print(
+                f"  WARNING: {rec['path']} has different catchments — results may be wrong"
+            )
 
         ds.close()
 
@@ -94,34 +100,50 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--input-dir", required=True,
-                        help="Directory containing per-storm NC files")
-    parser.add_argument("--output", required=True,
-                        help="Output NetCDF path")
-    parser.add_argument("--pattern", default=_FILE_PATTERN,
-                        help=f"Glob pattern for input files (default: {_FILE_PATTERN})")
-    parser.add_argument("--manifest", default=None,
-                        help="Optional CSV; only storms whose ID appears in --id-col "
-                             "will be included")
-    parser.add_argument("--id-col", default="storm_index",
-                        help="Column in --manifest whose values match the storm IDs "
-                             "embedded in the filenames (default: storm_index)")
-    parser.add_argument("--var", default="depth_mm_15min",
-                        help="Variable name to aggregate (default: depth_mm_15min)")
-    parser.add_argument("--complevel", type=int, default=4,
-                        help="zlib compression level 1-9 (default: 4)")
+    parser.add_argument(
+        "--input-dir", required=True, help="Directory containing per-storm NC files"
+    )
+    parser.add_argument("--output", required=True, help="Output NetCDF path")
+    parser.add_argument(
+        "--pattern",
+        default=_FILE_PATTERN,
+        help=f"Glob pattern for input files (default: {_FILE_PATTERN})",
+    )
+    parser.add_argument(
+        "--manifest",
+        default=None,
+        help="Optional CSV; only storms whose ID appears in --id-col will be included",
+    )
+    parser.add_argument(
+        "--id-col",
+        default="storm_index",
+        help="Column in --manifest whose values match the storm IDs "
+        "embedded in the filenames (default: storm_index)",
+    )
+    parser.add_argument(
+        "--var",
+        default="depth_mm_15min",
+        help="Variable name to aggregate (default: depth_mm_15min)",
+    )
+    parser.add_argument(
+        "--complevel",
+        type=int,
+        default=4,
+        help="zlib compression level 1-9 (default: 4)",
+    )
     args = parser.parse_args()
 
     # resolve manifest filter
     allowed_ids = None
     if args.manifest:
         import pandas as pd
+
         mdf = pd.read_csv(args.manifest)
         if args.id_col not in mdf.columns:
             sys.exit(
                 f"Column '{args.id_col}' not found in {args.manifest}.\n"
                 f"Available columns: {mdf.columns.tolist()}\n"
-                f"Use --id-col to specify the right column."
+                f"Use --id-col to specify the right column.",
             )
         allowed_ids = set(mdf[args.id_col].dropna().astype(int).tolist())
         print(f"Manifest: {len(allowed_ids)} storms (col: {args.id_col})")
@@ -131,7 +153,9 @@ def main():
     if not records:
         msg = "No matching storm files found after filtering."
         if allowed_ids:
-            import glob as _glob, os as _os
+            import glob as _glob
+            import os as _os
+
             file_ids = sorted(
                 int(m.group(1))
                 for p in _glob.glob(_os.path.join(args.input_dir, args.pattern))
@@ -151,7 +175,9 @@ def main():
     n_steps_arr, max_steps, event_starts, catchments = _read_meta(records)
     n_events = len(records)
     n_catchments = len(catchments)
-    print(f"Events: {n_events}  |  max timesteps: {max_steps}  |  catchments: {n_catchments}")
+    print(
+        f"Events: {n_events}  |  max timesteps: {max_steps}  |  catchments: {n_catchments}"
+    )
 
     # read time units from first file
     with netCDF4.Dataset(records[0]['path'], "r") as ds0:
@@ -189,8 +215,12 @@ def main():
     chunk_t = min(max_steps, 481)
     chunk_c = min(n_catchments, 64)
     v_data = nc_out.createVariable(
-        args.var, 'f4', ('event', 'time_step', 'catchment'),
-        fill_value=np.nan, zlib=True, complevel=args.complevel,
+        args.var,
+        'f4',
+        ('event', 'time_step', 'catchment'),
+        fill_value=np.nan,
+        zlib=True,
+        complevel=args.complevel,
         chunksizes=(chunk_e, chunk_t, chunk_c),
     )
     v_data.units = "mm per 15 min"
@@ -200,17 +230,21 @@ def main():
     # second pass: stream each event into the output
     for i, rec in enumerate(records):
         ds = netCDF4.Dataset(rec['path'], 'r')
-        data = ds.variables[args.var][:]   # (time, catchment)
+        data = ds.variables[args.var][:]  # (time, catchment)
         ds.close()
         # transpose to (catchment, time) then write (event, time_step, catchment)
         n = data.shape[0]
-        v_data[i, :n, :] = data  # source shape: (time, catchment) → (event, time_step, catchment)
+        v_data[i, :n, :] = (
+            data  # source shape: (time, catchment) → (event, time_step, catchment)
+        )
         if (i + 1) % 20 == 0 or i == n_events - 1:
             print(f"  {i + 1}/{n_events} events written")
 
     nc_out.close()
     print(f"Done -> {args.output}")
-    print(f"  Shape: ({n_events} events, {max_steps} max steps, {n_catchments} catchments)")
+    print(
+        f"  Shape: ({n_events} events, {max_steps} max steps, {n_catchments} catchments)"
+    )
 
 
 if __name__ == '__main__':

@@ -54,17 +54,21 @@ from flash_preprocess.aorc import (
     groupby_mean_equal,
     disaggregate_to_15min,
 )
-from flash_preprocess.utils import build_upstream_graph, expand_upstream, HF_PATH_DEFAULT
+from flash_preprocess.utils import (
+    build_upstream_graph,
+    expand_upstream,
+    HF_PATH_DEFAULT,
+)
 
 
 def round_to_nearest_15min(dt_str: str) -> np.datetime64:
     """Parse an ISO 8601 datetime string and round to nearest 15min (half-up).
-    
+
     Parameters
     ----------
     dt_str
         ISO 8601 datetime string, e.g. '2021-10-09T 13:37:30'.
-    
+
     Returns
     -------
     np.datetime64
@@ -80,18 +84,20 @@ def round_to_nearest_15min(dt_str: str) -> np.datetime64:
         raise ValueError(f"Cannot parse datetime: {dt_str!r}")
     total_minutes = dt.hour * 60 + dt.minute + dt.second / 60
     rounded = int(total_minutes / 15 + 0.5) * 15
-    dt_r = dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=rounded)
+    dt_r = dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        minutes=rounded
+    )
     return np.datetime64(dt_r, 'm')
 
 
 def parse_window(window_str: str) -> int:
     """Parse window string into total minutes. Accepts '5d', '120h', '7200min'.
-    
+
     Parameters
     ----------
     window_str
         String specifying a duration in days, hours, or minutes.
-    
+
     Returns
     -------
     int
@@ -103,7 +109,9 @@ def parse_window(window_str: str) -> int:
         return int(window_str[:-1]) * 60
     elif window_str.endswith('min'):
         return int(window_str[:-3])
-    raise ValueError(f"Unrecognised window format {window_str!r}. Use e.g. '5d', '120h', '7200min'.")
+    raise ValueError(
+        f"Unrecognised window format {window_str!r}. Use e.g. '5d', '120h', '7200min'."
+    )
 
 
 def main():
@@ -114,42 +122,74 @@ def main():
 
     # Arg parse
     time_grp = parser.add_mutually_exclusive_group(required=True)
-    time_grp.add_argument('--year', type=int,
-                          help="Full calendar year (e.g. 2022)")
-    time_grp.add_argument('--start', metavar='DATETIME',
-                          help="Start of range, ISO 8601. Pair with --end.")
-    time_grp.add_argument('--center', metavar='DATETIME',
-                          help="Centre of a symmetric time window (ISO 8601, e.g. "
-                               "'2021-10-09T13:37:30'). Rounded to nearest 15 min "
-                               "when --timestep 15min. Pair with --window.")
+    time_grp.add_argument('--year', type=int, help="Full calendar year (e.g. 2022)")
+    time_grp.add_argument(
+        '--start', metavar='DATETIME', help="Start of range, ISO 8601. Pair with --end."
+    )
+    time_grp.add_argument(
+        '--center',
+        metavar='DATETIME',
+        help="Centre of a symmetric time window (ISO 8601, e.g. "
+        "'2021-10-09T13:37:30'). Rounded to nearest 15 min "
+        "when --timestep 15min. Pair with --window.",
+    )
 
-    parser.add_argument('--end', metavar='DATETIME', default=None,
-                        help="End of range, inclusive. Required with --start.")
-    parser.add_argument('--window', metavar='DURATION', default=None,
-                        help="Window size around --center, e.g. '5d', '120h', "
-                             "'7200min'. Required with --center.")
+    parser.add_argument(
+        '--end',
+        metavar='DATETIME',
+        default=None,
+        help="End of range, inclusive. Required with --start.",
+    )
+    parser.add_argument(
+        '--window',
+        metavar='DURATION',
+        default=None,
+        help="Window size around --center, e.g. '5d', '120h', "
+        "'7200min'. Required with --center.",
+    )
 
     # spatial index
-    parser.add_argument('--index', required=True,
-                        help="Index pkl (index_hf22.py or index_hf22_weighted.py)")
+    parser.add_argument(
+        '--index',
+        required=True,
+        help="Index pkl (index_hf22.py or index_hf22_weighted.py)",
+    )
 
     # optional catchment filter
-    parser.add_argument('--catchment-ids', nargs="+", metavar='ID', default=None,
-                        help="Subset of catchment IDs to output. If omitted, all "
-                             "catchments in the index are used.")
-    parser.add_argument('--upstream', action='store_true',
-                        help="Expand --catchment-ids to include all upstream "
-                             "catchments (reads hydrofabric network).")
-    parser.add_argument('--hydrofabric', default=HF_PATH_DEFAULT,
-                        help="Path to conus_nextgen.gpkg, needed for --upstream.")
+    parser.add_argument(
+        '--catchment-ids',
+        nargs="+",
+        metavar='ID',
+        default=None,
+        help="Subset of catchment IDs to output. If omitted, all "
+        "catchments in the index are used.",
+    )
+    parser.add_argument(
+        '--upstream',
+        action='store_true',
+        help="Expand --catchment-ids to include all upstream "
+        "catchments (reads hydrofabric network).",
+    )
+    parser.add_argument(
+        '--hydrofabric',
+        default=HF_PATH_DEFAULT,
+        help="Path to conus_nextgen.gpkg, needed for --upstream.",
+    )
 
     # output
-    parser.add_argument('--output-dir', default='.',
-                        help="Output directory")
-    parser.add_argument('--variables', nargs="+", default=VARIABLE_LIST,
-                        help="Variables to extract (default: all 8)")
-    parser.add_argument('--timestep', choices=['1h', '15min'], default='1h',
-                        help="Output timestep: 1h (default) or 15min.")
+    parser.add_argument('--output-dir', default='.', help="Output directory")
+    parser.add_argument(
+        '--variables',
+        nargs="+",
+        default=VARIABLE_LIST,
+        help="Variables to extract (default: all 8)",
+    )
+    parser.add_argument(
+        '--timestep',
+        choices=['1h', '15min'],
+        default='1h',
+        help="Output timestep: 1h (default) or 15min.",
+    )
     args = parser.parse_args()
 
     if args.start and args.end is None:
@@ -194,7 +234,7 @@ def main():
             end = win_end.astype('datetime64[h]') + np.timedelta64(1, 'h')
             i_start = int(
                 (win_start.astype('datetime64[m]') - start.astype('datetime64[m]'))
-                / np.timedelta64(15, 'm')
+                / np.timedelta64(15, 'm'),
             )
             trim_slice = (i_start, i_start + n_window)
         else:
@@ -282,7 +322,7 @@ def main():
         t0_m = time_vals[0].astype('datetime64[m]')
         out_times = t0_m + np.arange(n_hours * 4) * np.timedelta64(15, 'm')
         if trim_slice is not None:
-            out_times = out_times[trim_slice[0]:trim_slice[1]]
+            out_times = out_times[trim_slice[0] : trim_slice[1]]
     else:
         out_times = time_vals.astype('datetime64[h]')
 
@@ -345,11 +385,14 @@ def main():
         if do_15min:
             result, _ = disaggregate_to_15min(result, var_name, time_vals)
             if trim_slice is not None:
-                result = result[:, trim_slice[0]:trim_slice[1]]
+                result = result[:, trim_slice[0] : trim_slice[1]]
 
         nc_var = nc_out.createVariable(
-            var_name, 'f4', ('catchment', 'time'),
-            zlib=True, complevel=1,
+            var_name,
+            'f4',
+            ('catchment', 'time'),
+            zlib=True,
+            complevel=1,
             chunksizes=(n_basins, min(n_steps, 1000)),
         )
         nc_var[:] = result.astype(np.float32)

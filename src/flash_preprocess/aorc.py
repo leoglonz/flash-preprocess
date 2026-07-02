@@ -85,9 +85,11 @@ def spatial_subset_weighted(
     c0, c1 = int(cols.min()), int(cols.max())
     n_sub = c1 - c0 + 1
 
-    print(f"  Bbox: rows {r0}-{r1}, cols {c0}-{c1} "
-          f"({r1-r0+1} × {n_sub} = {(r1-r0+1)*n_sub:,} pixels, "
-          f"was {4201*8401:,})")
+    print(
+        f"  Bbox: rows {r0}-{r1}, cols {c0}-{c1} "
+        f"({r1 - r0 + 1} × {n_sub} = {(r1 - r0 + 1) * n_sub:,} pixels, "
+        f"was {4201 * 8401:,})"
+    )
 
     ds_sub = ds.isel(latitude=slice(r0, r1 + 1), longitude=slice(c0, c1 + 1))
     local_cids = [
@@ -122,9 +124,11 @@ def spatial_subset_equal(
     r0, r1 = int(rows.min()), int(rows.max())
     c0, c1 = int(cols.min()), int(cols.max())
 
-    print(f"  Bbox: rows {r0}-{r1}, cols {c0}-{c1} "
-          f"({r1-r0+1} × {c1-c0+1} = {(r1-r0+1)*(c1-c0+1):,} pixels, "
-          f"was {4201*8401:,})")
+    print(
+        f"  Bbox: rows {r0}-{r1}, cols {c0}-{c1} "
+        f"({r1 - r0 + 1} × {c1 - c0 + 1} = {(r1 - r0 + 1) * (c1 - c0 + 1):,} pixels, "
+        f"was {4201 * 8401:,})"
+    )
 
     ds_sub = ds.isel(latitude=slice(r0, r1 + 1), longitude=slice(c0, c1 + 1))
     return ds_sub, (rows - r0).tolist(), (cols - c0).tolist()
@@ -154,10 +158,14 @@ def build_weight_matrix(
     scipy.sparse.csr_matrix
         Shape (n_basins, n_pixels), float32.
     """
-    rows = np.concatenate([np.full(len(c), i, dtype=np.int32) for i, c in enumerate(cell_ids_list)])
+    rows = np.concatenate(
+        [np.full(len(c), i, dtype=np.int32) for i, c in enumerate(cell_ids_list)]
+    )
     cols = np.concatenate(cell_ids_list).astype(np.int32)
     vals = np.concatenate([w / w.sum() for w in weights_list]).astype(np.float32)
-    return csr_matrix((vals, (rows, cols)), shape=(n_basins, n_pixels), dtype=np.float32)
+    return csr_matrix(
+        (vals, (rows, cols)), shape=(n_basins, n_pixels), dtype=np.float32
+    )
 
 
 def weighted_mean(flat_raster: np.ndarray, W: csr_matrix) -> np.ndarray:
@@ -203,7 +211,9 @@ def groupby_mean_equal(data: np.ndarray, interval: np.ndarray) -> np.ndarray:
 
 
 def disaggregate_to_15min(
-    data: np.ndarray, var_name: str, time_vals: np.ndarray
+    data: np.ndarray,
+    var_name: str,
+    time_vals: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Disaggregate hourly catchment data to 15-minute intervals.
 

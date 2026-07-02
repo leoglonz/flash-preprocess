@@ -42,7 +42,6 @@ import sqlite3
 from pathlib import Path
 
 import geopandas as gpd
-import numpy as np
 import pandas as pd
 
 from flash_preprocess.utils import build_upstream_graph, expand_upstream
@@ -166,11 +165,15 @@ def find_gages_in_region(
         JOIN   divides d ON 'wb' || SUBSTR(d.divide_id, 4) = h.id
         WHERE  h.hl_reference IN ('gages', 'usgs-gage')
           AND  h.id LIKE 'wb-%'
-        """
+        """,
     ).fetchall()
 
     df = pd.DataFrame(rows, columns=['STAID', 'divide_id', 'DRAIN_SQKM'])
-    df = df[df['divide_id'].isin(node_ids)].drop_duplicates('STAID').reset_index(drop=True)
+    df = (
+        df[df['divide_id'].isin(node_ids)]
+        .drop_duplicates('STAID')
+        .reset_index(drop=True)
+    )
     log.info('Found %d USGS gages in study region', len(df))
     return df
 
@@ -181,7 +184,7 @@ def build_topology_json(
     gages_df: pd.DataFrame,
 ) -> dict:
     """Assemble the topology dict expected by FlashHydroLoader / MtsHydroLoader.
-    
+
     Parameters
     ----------
     nodes
@@ -191,7 +194,7 @@ def build_topology_json(
         direction.
     gages_df
         DataFrame of USGS gages in the region, with columns STAID and divide_id
-    
+
     Returns
     -------
     dict
@@ -212,15 +215,42 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     src = parser.add_mutually_exclusive_group(required=True)
-    src.add_argument('--csv', type=Path, help='CSV file containing a column of divide IDs')
-    src.add_argument('--divide-ids', nargs='+', metavar='cat-XXXXX', help='Explicit list of seed divide IDs')
-    parser.add_argument('--csv-column', default=DEFAULT_COLUMN_DIVIDE_ID, help="Column in --csv holding divide IDs (default: %(default)s)")
-    parser.add_argument('--gpkg', type=Path, required=True, help='Path to conus_nextgen.gpkg')
-    parser.add_argument('--output-dir', type=Path, required=True, help='Output directory')
-    parser.add_argument('--upstream', action='store_true', default=True, help='Expand to full upstream network (default: on)')
-    parser.add_argument('--no-upstream', dest='upstream', action='store_false', help='Only keep seed divide IDs, no upstream expansion')
+    src.add_argument(
+        '--csv', type=Path, help='CSV file containing a column of divide IDs'
+    )
+    src.add_argument(
+        '--divide-ids',
+        nargs='+',
+        metavar='cat-XXXXX',
+        help='Explicit list of seed divide IDs',
+    )
+    parser.add_argument(
+        '--csv-column',
+        default=DEFAULT_COLUMN_DIVIDE_ID,
+        help="Column in --csv holding divide IDs (default: %(default)s)",
+    )
+    parser.add_argument(
+        '--gpkg', type=Path, required=True, help='Path to conus_nextgen.gpkg'
+    )
+    parser.add_argument(
+        '--output-dir', type=Path, required=True, help='Output directory'
+    )
+    parser.add_argument(
+        '--upstream',
+        action='store_true',
+        default=True,
+        help='Expand to full upstream network (default: on)',
+    )
+    parser.add_argument(
+        '--no-upstream',
+        dest='upstream',
+        action='store_false',
+        help='Only keep seed divide IDs, no upstream expansion',
+    )
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -271,7 +301,13 @@ def main():
     topo = build_topology_json(nodes, edges, gages_df)
     with open(topo_path, 'w') as f:
         json.dump(topo, f)
-    log.info('Wrote %s (%d nodes, %d edges, %d gages)', topo_path, len(topo['nodes']), len(topo['edges']), len(topo['gage_hf']))
+    log.info(
+        'Wrote %s (%d nodes, %d edges, %d gages)',
+        topo_path,
+        len(topo['nodes']),
+        len(topo['edges']),
+        len(topo['gage_hf']),
+    )
 
     gauges_path = args.output_dir / 'gauges.csv'
     gages_df.to_csv(gauges_path, index=False)

@@ -33,7 +33,11 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 
-from flash_preprocess.utils import build_upstream_graph, expand_upstream, HF_PATH_DEFAULT
+from flash_preprocess.utils import (
+    build_upstream_graph,
+    expand_upstream,
+    HF_PATH_DEFAULT,
+)
 
 
 CONUS_INDEX = '/Users/leoglonz/Desktop/noaa/data/index_dict.pkl'
@@ -45,7 +49,7 @@ def _read_table(conn, sql):
 
 
 def filter_and_save(target_ids, conus_index_path, output_path):
-    print(f"Loading CONUS index...")
+    print("Loading CONUS index...")
     with open(conus_index_path, 'rb') as f:
         conus = pickle.load(f)
 
@@ -83,25 +87,52 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument('--hydrofabric', default=HF_PATH_DEFAULT,
-                        help="Path to conus_nextgen.gpkg (default: %(default)s)")
-    parser.add_argument('--conus-index', default=CONUS_INDEX,
-                        help="Path to full CONUS index_dict.pkl (default: %(default)s)")
-    parser.add_argument('--output', default=DEFAULT_OUT,
-                        help="Output path for the subset index pkl (default: %(default)s)")
-    parser.add_argument('--upstream', action='store_true',
-                        help="Expand selection to include all upstream catchments")
+    parser.add_argument(
+        '--hydrofabric',
+        default=HF_PATH_DEFAULT,
+        help="Path to conus_nextgen.gpkg (default: %(default)s)",
+    )
+    parser.add_argument(
+        '--conus-index',
+        default=CONUS_INDEX,
+        help="Path to full CONUS index_dict.pkl (default: %(default)s)",
+    )
+    parser.add_argument(
+        '--output',
+        default=DEFAULT_OUT,
+        help="Output path for the subset index pkl (default: %(default)s)",
+    )
+    parser.add_argument(
+        '--upstream',
+        action='store_true',
+        help="Expand selection to include all upstream catchments",
+    )
 
     sel = parser.add_mutually_exclusive_group()
-    sel.add_argument('--gpkg', default=None,
-                     help="Select all divides from this geopackage (reads 'divides' layer)")
-    sel.add_argument('--catchment-ids', nargs='+', metavar='ID',
-                     help="Explicit catchment IDs, e.g. --catchment-ids cat-100 cat-200")
-    sel.add_argument('--csv', default=None, metavar='PATH',
-                     help="CSV file with catchment IDs in a column")
-    parser.add_argument('--csv-column', default="gage_cat-id", metavar="COL",
-                        help="Column name in --csv that contains catchment IDs "
-                             "(default: %(default)s). Bare integers are prefixed with 'cat-'.")
+    sel.add_argument(
+        '--gpkg',
+        default=None,
+        help="Select all divides from this geopackage (reads 'divides' layer)",
+    )
+    sel.add_argument(
+        '--catchment-ids',
+        nargs='+',
+        metavar='ID',
+        help="Explicit catchment IDs, e.g. --catchment-ids cat-100 cat-200",
+    )
+    sel.add_argument(
+        '--csv',
+        default=None,
+        metavar='PATH',
+        help="CSV file with catchment IDs in a column",
+    )
+    parser.add_argument(
+        '--csv-column',
+        default="gage_cat-id",
+        metavar="COL",
+        help="Column name in --csv that contains catchment IDs "
+        "(default: %(default)s). Bare integers are prefixed with 'cat-'.",
+    )
 
     args = parser.parse_args()
 
@@ -117,7 +148,9 @@ def main():
         df_csv = pd.read_csv(args.csv)
         raw = df_csv[args.csv_column].astype(str).tolist()
         seed_ids = {v if v.startswith('cat-') else f"cat-{v}" for v in raw}
-        print(f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})")
+        print(
+            f"Loaded {len(seed_ids)} catchments from {args.csv} (col: {args.csv_column})"
+        )
     else:
         print(f"No selection specified — using all divides in {args.hydrofabric}")
         conn = sqlite3.connect(args.hydrofabric)
@@ -131,7 +164,9 @@ def main():
         print(f"Expanding {len(seed_ids)} seeds upstream...")
         graph = build_upstream_graph(args.hydrofabric)
         target_ids = expand_upstream(seed_ids, graph)
-        print(f"  {len(seed_ids)} -> {len(target_ids)} catchments after upstream expansion")
+        print(
+            f"  {len(seed_ids)} -> {len(target_ids)} catchments after upstream expansion"
+        )
     else:
         target_ids = seed_ids
 
