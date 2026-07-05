@@ -13,17 +13,18 @@ Output
   {output_dir}/aorc_hr.nc
       dims: (event, time_step, catchment), up to 660 hourly steps
       time: [centroid - 30d, centroid - 2.5d]
-      vars: APCP_surface, TMP_2maboveground, PET
+      vars: P, Temp, PET
 
   {output_dir}/aorc_15min.nc
       dims: (event, time_step, catchment), up to 480 15-min steps
       time: [centroid - 2.5d, centroid + 2.5d]
-      vars: TMP_2maboveground, PET
+      vars: Temp, PET
 
   Both files carry per-event coordinates:
     event_id    (event,)  str
     n_steps     (event,)  int32   actual valid steps (slice [:n_steps] to unpad)
-    event_start (event,)  float64 minutes since 1970-01-01 for step 0
+    ts_start    (event,)  float64 minutes since 1970-01-01 for step 0
+    ts_end      (event,)  float64 minutes since 1970-01-01 for last valid step
 
 Usage
 -----
@@ -69,14 +70,14 @@ def _load_forcing(nc_path: str) -> tuple[np.ndarray, dict, dict[str, np.ndarray]
     """
     nc = netCDF4.Dataset(nc_path, 'r')
     time_dt = _EPOCH + nc.variables['time'][:].astype('timedelta64[m]')
-    cat_ids = np.array(nc.variables['catchment'][:])
+    cat_ids = np.array(nc.variables['divide_id'][:])
     meta = {
         'n_basins': len(cat_ids),
         'station_ids': cat_ids,
         'cat_lats': np.array(nc.variables['latitude'][:], dtype=np.float32),
         'cat_lons': np.array(nc.variables['longitude'][:], dtype=np.float32),
     }
-    skip = {'time', 'catchment', 'latitude', 'longitude'}
+    skip = {'time', 'divide_id', 'latitude', 'longitude'}
     data = {v: nc.variables[v][:] for v in nc.variables if v not in skip}
     nc.close()
     return time_dt, meta, data
@@ -142,11 +143,15 @@ def _create_output_nc(
     v = nc.createVariable('n_steps', 'i4', ('event',))
     v.long_name = 'number of valid timesteps for this event'
 
-    v = nc.createVariable('event_start', 'f8', ('event',))
+    v = nc.createVariable('ts_start', 'f8', ('event',))
     v.units = 'minutes since 1970-01-01 00:00:00 UTC'
-    v.long_name = 'time of first valid timestep (step 0)'
+    v.long_name = 'start of the timeseries window (time step 0)'
 
-    v = nc.createVariable('catchment', str, ('catchment',))
+    v = nc.createVariable('ts_end', 'f8', ('event',))
+    v.units = 'minutes since 1970-01-01 00:00:00 UTC'
+    v.long_name = 'end of the timeseries window (last valid step)'
+
+    v = nc.createVariable('divide_id', str, ('catchment',))
     v.long_name = 'NextGen catchment ID'
     v[:] = np.array(meta['station_ids'], dtype=object)
 
@@ -174,6 +179,7 @@ def _create_output_nc(
         )
         for k, val in attrs.items():
             setattr(nv, k, val)
+        nv.coordinates = "event_id n_steps ts_start ts_end divide_id latitude longitude"
 
     return nc
 
@@ -246,8 +252,8 @@ def main() -> None:
         _MAX_HOURLY,
         meta,
         data_vars={
-            'APCP_surface': {'units': 'kg m-2', 'long_name': 'Precipitation'},
-            'TMP_2maboveground': {'units': 'K', 'long_name': 'Air temperature at 2 m'},
+            'P': {'units': 'kg m-2', 'long_name': 'Precipitation'},
+            'Temp': {'units': 'degC', 'long_name': 'Air temperature at 2 m'},
             'PET': {
                 'units': 'mm h-1',
                 'long_name': 'Penman-Monteith ET0 (FAO-56 hourly)',
@@ -260,8 +266,8 @@ def main() -> None:
         _MAX_15MIN,
         meta,
         data_vars={
-            'TMP_2maboveground': {
-                'units': 'K',
+            'Temp': {
+                'units': 'degC',
                 'long_name': 'Air temperature at 2 m (interpolated)',
             },
             'PET': {
@@ -289,13 +295,16 @@ def main() -> None:
 
         nc_hourly.variables['event_id'][i] = event_id
         nc_hourly.variables['n_steps'][i] = n_ant
-        nc_hourly.variables['event_start'][i] = float(
+        nc_hourly.variables['ts_start'][i] = float(
             (time_ant[0] - _EPOCH) / np.timedelta64(1, 'm'),
         )
-        nc_hourly.variables['APCP_surface'][i, :n_ant, :] = vd_ant['APCP_surface'].T
-        nc_hourly.variables['TMP_2maboveground'][i, :n_ant, :] = vd_ant[
-            'TMP_2maboveground'
-        ].T
+        nc_hourly.variables['ts_end'][i] = float(
+            (time_ant[-1] - _EPOCH) / np.timedelta64(1, 'm'),
+        )
+        nc_hourly.variables['P'][i, :n_ant, :] = vd_ant['APCP_surface'].T
+        nc_hourly.variables['Temp'][i, :n_ant, :] = (
+            vd_ant['TMP_2maboveground'] - 273.15
+        ).T
         nc_hourly.variables['PET'][i, :n_ant, :] = pet_ant.T
 
         vd_evt = {k: v[:, evt_mask] for k, v in data.items()}
@@ -309,13 +318,15 @@ def main() -> None:
 
         nc_15min.variables['event_id'][i] = event_id
         nc_15min.variables['n_steps'][i] = n_15min
-        nc_15min.variables['event_start'][i] = float(
+        nc_15min.variables['ts_start'][i] = float(
             (time_evt[0] - _EPOCH) / np.timedelta64(1, 'm'),
         )
-        nc_15min.variables['TMP_2maboveground'][i, :n_15min, :] = tmp_15min[
-            :,
-            :n_15min,
-        ].T
+        nc_15min.variables['ts_end'][i] = float(
+            (time_evt[0] - _EPOCH) / np.timedelta64(1, 'm') + (n_15min - 1) * 15,
+        )
+        nc_15min.variables['Temp'][i, :n_15min, :] = (
+            tmp_15min[:, :n_15min] - 273.15
+        ).T
         nc_15min.variables['PET'][i, :n_15min, :] = pet_15min[:, :n_15min].T
 
         print(
