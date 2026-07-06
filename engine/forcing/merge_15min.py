@@ -12,18 +12,20 @@ block below). This script:
 Output
 ------
   Coordinates:
-    event_id    (event,)     str     shared AORC/MRMS event ID
-    n_steps     (event,)     i32     valid 15-min steps (minimum of both sources)
-    ts_start    (event,)     f64     start of the 5-day window (minutes since 1970-01-01)
-    ts_end      (event,)     f64     end of the 5-day window (minutes since 1970-01-01)
-    catchment   (catchment,) str     NextGen divide ID (intersection of both files)
-    latitude    (catchment,) f32
-    longitude   (catchment,) f32
+    event_id        (event,)     str     shared AORC/MRMS event ID
+    n_steps         (event,)     i32     valid 15-min steps (minimum of both sources)
+    ts_start        (event,)     f64     start of the 5-day window (minutes since 1970-01-01)
+    ts_end          (event,)     f64     end of the 5-day window (minutes since 1970-01-01)
+    event_gage_id   (event,)     str     zero-padded 8-digit USGS gauge downstream of event
+    event_divide_id (event,)     str     NextGen catchment ID downstream of event
+    catchment       (catchment,) str     NextGen divide ID (intersection of both files)
+    latitude        (catchment,) f32
+    longitude       (catchment,) f32
 
   Variables:
-    Temp               (event, time_step, catchment)  f32  from AORC
-    PET                (event, time_step, catchment)  f32  from AORC
     P     (event, time_step, catchment)  f32  from MRMS
+    T               (event, time_step, catchment)  f32  from AORC
+    PET                (event, time_step, catchment)  f32  from AORC
 
 Usage
 -----
@@ -191,6 +193,8 @@ def main() -> None:
     aorc_ts_ends = np.array(nc_aorc.variables["ts_end"][:], dtype=np.float64)
     aorc_lats = np.array(nc_aorc.variables["latitude"][:], dtype=np.float32)
     aorc_lons = np.array(nc_aorc.variables["longitude"][:], dtype=np.float32)
+    aorc_gage_ids = _load_str_var(nc_aorc, "event_gage_id")
+    aorc_divide_ids = _load_str_var(nc_aorc, "event_divide_id")
 
     out_n_steps = np.minimum(
         aorc_n_steps[aorc_indices],
@@ -221,6 +225,14 @@ def main() -> None:
     v.units = "minutes since 1970-01-01 00:00:00 UTC"
     v.long_name = "end of the 5-day timeseries window (from AORC, time step n_steps-1)"
     v[:] = aorc_ts_ends[aorc_indices]
+
+    v = nc_out.createVariable("event_gage_id", str, ("event",))
+    v.long_name = "zero-padded 8-digit USGS gauge ID downstream of this event"
+    v[:] = aorc_gage_ids[aorc_indices]
+
+    v = nc_out.createVariable("event_divide_id", str, ("event",))
+    v.long_name = "NextGen catchment ID downstream of this event"
+    v[:] = aorc_divide_ids[aorc_indices]
 
     v = nc_out.createVariable("divide_id", str, ("catchment",))
     v.long_name = "NextGen catchment ID"
@@ -267,32 +279,36 @@ def main() -> None:
         )
         nv.units = units
         nv.long_name = long_name
-        nv.coordinates = "event_id n_steps ts_start ts_end divide_id latitude longitude"
+        nv.coordinates = "event_id n_steps ts_start ts_end event_gage_id event_divide_id divide_id latitude longitude"
         return nv
 
-    v_tmp = _make_var("Temp", "degC", "Air temperature at 2 m (interpolated)")
-    v_pet = _make_var(
-        "PET",
-        "mm [15 min]-1",
-        "Penman-Monteith ET0 (15-min, uniform split)",
-    )
     v_dep = _make_var(
         "P",
         "mm [15 min]-1",
         "MRMS precipitation depth"
+    )
+    v_tmp = _make_var(
+        "T",
+        "degC",
+        "Air temperature at 2 m (interpolated)"
+    )
+    v_pet = _make_var(
+        "PET",
+        "mm [15 min]-1",
+        "Penman-Monteith ET0 (15-min, uniform split)",
     )
 
     print(f"Writing {n_events} events ...")
     for out_i, (ai, mi) in enumerate(zip(aorc_indices, mrms_indices)):
         ns = int(out_n_steps[out_i])
 
-        tmp_row = nc_aorc.variables["Temp"][ai, :ns, :][:, aorc_ci]
-        pet_row = nc_aorc.variables["PET"][ai, :ns, :][:, aorc_ci]
         dep_row = nc_mrms.variables["P"][mi, :ns, :][:, mrms_ci]
+        tmp_row = nc_aorc.variables["T"][ai, :ns, :][:, aorc_ci]
+        pet_row = nc_aorc.variables["PET"][ai, :ns, :][:, aorc_ci]
 
+        v_dep[out_i, :ns, :] = dep_row
         v_tmp[out_i, :ns, :] = tmp_row
         v_pet[out_i, :ns, :] = pet_row
-        v_dep[out_i, :ns, :] = dep_row
 
         if (out_i + 1) % 20 == 0 or out_i == n_events - 1:
             print(f"  {out_i + 1}/{n_events}")

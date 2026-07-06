@@ -11,8 +11,8 @@ disaggregated to 15 min by linear interpolation; PET by uniform split
 Output
 ------
   {output_dir}/aorc_hr.nc
-      dims: (event, time_step, catchment), up to 660 hourly steps
-      time: [centroid - 30d, centroid - 2.5d]
+      dims: (event, time_step, catchment), up to 720 hourly steps
+      time: [centroid - 32.5d, centroid - 2.5d]  (30-day warmup before 5-day window)
       vars: P, Temp, PET
 
   {output_dir}/aorc_15min.nc
@@ -21,10 +21,12 @@ Output
       vars: Temp, PET
 
   Both files carry per-event coordinates:
-    event_id    (event,)  str
-    n_steps     (event,)  int32   actual valid steps (slice [:n_steps] to unpad)
-    ts_start    (event,)  float64 minutes since 1970-01-01 for step 0
-    ts_end      (event,)  float64 minutes since 1970-01-01 for last valid step
+    event_id        (event,)  str
+    n_steps         (event,)  int32   actual valid steps (slice [:n_steps] to unpad)
+    ts_start        (event,)  float64 minutes since 1970-01-01 for step 0
+    ts_end          (event,)  float64 minutes since 1970-01-01 for last valid step
+    event_gage_id   (event,)  str     zero-padded 8-digit USGS gauge downstream of event
+    event_divide_id (event,)  str     NextGen catchment ID downstream of event
 
 Usage
 -----
@@ -46,15 +48,19 @@ from flash_preprocess.aorc import disaggregate_to_15min
 from flash_preprocess.pet import penman_monteith_pet
 
 
-_ANTECEDENT_DAYS = 30.0
-_PRE_EVENT_DAYS = 2.5  # half of 5-day event window
+_WARMUP_DAYS = 30.0       # desired hourly warmup duration before the 5-day window
+_PRE_EVENT_DAYS = 2.5    # half of 5-day event window (window = centroid ± 2.5d)
+# Lookback from centroid to warmup start: warmup + pre-event half-window
+_ANTECEDENT_DAYS = _WARMUP_DAYS + _PRE_EVENT_DAYS  # 32.5 days
 
-_MAX_HOURLY = int((_ANTECEDENT_DAYS - _PRE_EVENT_DAYS) * 24)  # 660
+_MAX_HOURLY = int(_WARMUP_DAYS * 24)          # 720
 _MAX_15MIN = int(2 * _PRE_EVENT_DAYS * 24 * 4)  # 480
 
 _EVENT_ID_COL = 'event_ids'
 _BEGIN_COL = 'BEGIN_DATE_TIME'
 _END_COL = 'END_DATE_TIME'
+_GAGE_ID_COL = 'STAID'
+_GAGE_CAT_COL = 'gage_cat-id'
 
 _EPOCH = np.datetime64('1970-01-01T00:00', 'm')
 
@@ -88,10 +94,12 @@ def _event_masks(
     time_dt: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.datetime64, int]:
     """Return boolean masks for the antecedent and event windows."""
-    ant_start = centroid - np.timedelta64(int(_ANTECEDENT_DAYS * 24 * 60), 'm')
+    # Floor both boundaries to the hour so the window is exactly _WARMUP_DAYS * 24
+    # steps regardless of the centroid's sub-hour offset.
     ant_end = (centroid - np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')).astype(
         'datetime64[h]',
     )
+    ant_start = ant_end - np.timedelta64(int(_WARMUP_DAYS * 24), 'h')
     evt_end_15m = (
         centroid + np.timedelta64(int(_PRE_EVENT_DAYS * 24 * 60), 'm')
     ).astype('datetime64[m]')
@@ -151,6 +159,12 @@ def _create_output_nc(
     v.units = 'minutes since 1970-01-01 00:00:00 UTC'
     v.long_name = 'end of the timeseries window (last valid step)'
 
+    v = nc.createVariable('event_gage_id', str, ('event',))
+    v.long_name = 'zero-padded 8-digit USGS gauge ID downstream of this event'
+
+    v = nc.createVariable('event_divide_id', str, ('event',))
+    v.long_name = 'NextGen catchment ID downstream of this event'
+
     v = nc.createVariable('divide_id', str, ('catchment',))
     v.long_name = 'NextGen catchment ID'
     v[:] = np.array(meta['station_ids'], dtype=object)
@@ -179,7 +193,7 @@ def _create_output_nc(
         )
         for k, val in attrs.items():
             setattr(nv, k, val)
-        nv.coordinates = "event_id n_steps ts_start ts_end divide_id latitude longitude"
+        nv.coordinates = "event_id n_steps ts_start ts_end event_gage_id event_divide_id divide_id latitude longitude"
 
     return nc
 
@@ -215,6 +229,20 @@ def main() -> None:
     df = df.dropna(subset=[_EVENT_ID_COL, _BEGIN_COL, _END_COL]).reset_index(drop=True)
     df['_centroid'] = df[_BEGIN_COL] + (df[_END_COL] - df[_BEGIN_COL]) / 2
     df['_event_id'] = df[_EVENT_ID_COL].astype(int).astype(str)
+    df['_gage_id'] = df[_GAGE_ID_COL].astype(int).astype(str).str.zfill(8)
+    df['_divide_id'] = df[_GAGE_CAT_COL].astype(str)
+
+    # Multiple NCEI storm report IDs can map to the same physical flood at the
+    # same gauge (same centroid hour → identical ±2.5-day NC window).  Keep one
+    # representative row per (gauge, centroid-hour) to avoid writing duplicate
+    # events into the output NC files.
+    df['_centroid_h'] = df['_centroid'].dt.floor('h')
+    n_before = len(df)
+    df = df.drop_duplicates(subset=['_gage_id', '_centroid_h'], keep='first').reset_index(drop=True)
+    n_dropped = n_before - len(df)
+    if n_dropped:
+        print(f"Dropped {n_dropped} duplicate (gauge, centroid-hour) rows before {n_before} total.")
+
     print(
         f"Events: {len(df)}  ({df[_BEGIN_COL].min().date()} - {df[_END_COL].max().date()})",
     )
@@ -253,7 +281,7 @@ def main() -> None:
         meta,
         data_vars={
             'P': {'units': 'kg m-2', 'long_name': 'Precipitation'},
-            'Temp': {'units': 'degC', 'long_name': 'Air temperature at 2 m'},
+            'T': {'units': 'degC', 'long_name': 'Air temperature at 2 m'},
             'PET': {
                 'units': 'mm h-1',
                 'long_name': 'Penman-Monteith ET0 (FAO-56 hourly)',
@@ -266,7 +294,7 @@ def main() -> None:
         _MAX_15MIN,
         meta,
         data_vars={
-            'Temp': {
+            'T': {
                 'units': 'degC',
                 'long_name': 'Air temperature at 2 m (interpolated)',
             },
@@ -301,8 +329,10 @@ def main() -> None:
         nc_hourly.variables['ts_end'][i] = float(
             (time_ant[-1] - _EPOCH) / np.timedelta64(1, 'm'),
         )
+        nc_hourly.variables['event_gage_id'][i] = row['_gage_id']
+        nc_hourly.variables['event_divide_id'][i] = row['_divide_id']
         nc_hourly.variables['P'][i, :n_ant, :] = vd_ant['APCP_surface'].T
-        nc_hourly.variables['Temp'][i, :n_ant, :] = (
+        nc_hourly.variables['T'][i, :n_ant, :] = (
             vd_ant['TMP_2maboveground'] - 273.15
         ).T
         nc_hourly.variables['PET'][i, :n_ant, :] = pet_ant.T
@@ -324,7 +354,9 @@ def main() -> None:
         nc_15min.variables['ts_end'][i] = float(
             (time_evt[0] - _EPOCH) / np.timedelta64(1, 'm') + (n_15min - 1) * 15,
         )
-        nc_15min.variables['Temp'][i, :n_15min, :] = (
+        nc_15min.variables['event_gage_id'][i] = row['_gage_id']
+        nc_15min.variables['event_divide_id'][i] = row['_divide_id']
+        nc_15min.variables['T'][i, :n_15min, :] = (
             tmp_15min[:, :n_15min] - 273.15
         ).T
         nc_15min.variables['PET'][i, :n_15min, :] = pet_15min[:, :n_15min].T
