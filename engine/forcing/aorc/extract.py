@@ -343,7 +343,7 @@ def main():
     v_time.calendar = 'standard'
     v_time[:] = time_num
 
-    v_cat = nc_out.createVariable('catchment', str, ('catchment',))
+    v_cat = nc_out.createVariable('divide_id', str, ('catchment',))
     v_cat.long_name = "NextGen catchment ID"
     v_cat[:] = np.array(out_cat_ids, dtype=object)
 
@@ -398,6 +398,7 @@ def main():
             complevel=1,
             chunksizes=(n_basins, min(n_steps, 1000)),
         )
+        nc_var.coordinates = "divide_id latitude longitude"
         nc_var[:] = result.astype(np.float32)
 
         del result
