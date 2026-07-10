@@ -232,16 +232,12 @@ def main() -> None:
     df['_gage_id'] = df[_GAGE_ID_COL].astype(int).astype(str).str.zfill(8)
     df['_divide_id'] = df[_GAGE_CAT_COL].astype(str)
 
-    # Multiple NCEI storm report IDs can map to the same physical flood at the
-    # same gauge (same centroid hour → identical ±2.5-day NC window).  Keep one
-    # representative row per (gauge, centroid-hour) to avoid writing duplicate
-    # events into the output NC files.
     df['_centroid_h'] = df['_centroid'].dt.floor('h')
     n_before = len(df)
     df = df.drop_duplicates(subset=['_gage_id', '_centroid_h'], keep='first').reset_index(drop=True)
     n_dropped = n_before - len(df)
     if n_dropped:
-        print(f"Dropped {n_dropped} duplicate (gauge, centroid-hour) rows before {n_before} total.")
+        print(f"Dropping {n_dropped} duplicates (gauge, centroid-hour) from total {n_before}.")
 
     print(
         f"Events: {len(df)}  ({df[_BEGIN_COL].min().date()} - {df[_END_COL].max().date()})",
@@ -361,10 +357,10 @@ def main() -> None:
         ).T
         nc_15min.variables['PET'][i, :n_15min, :] = pet_15min[:, :n_15min].T
 
-        print(
-            f"  [{event_id}]  hourly: {n_ant} steps  |  "
-            f"15 min: {n_15min} steps  |  {_time.time() - t0:.1f}s",
-        )
+        # print(
+        #     f"  [{event_id}]  hourly: {n_ant} steps  |  "
+        #     f"15 min: {n_15min} steps  |  {_time.time() - t0:.1f}s",
+        # )
 
     nc_hourly.close()
     nc_15min.close()
