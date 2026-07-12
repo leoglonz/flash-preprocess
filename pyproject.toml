@@ -30,15 +30,17 @@ keywords = [
 ]
 dependencies = [
     "dask",
+    "exactextract",
     "geopandas",
     "h5netcdf",
     "netcdf4",
     "numpy",
     "pandas",
-    "shapely",
+    "scipy",
     "s3fs",
     "tqdm",
     "xarray",
+    "zarr",
 ]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",

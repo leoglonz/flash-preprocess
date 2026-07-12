@@ -1,10 +1,8 @@
 r"""Merge AORC and MRMS 15-min NetCDFs into a single combined forcing file.
 
-AORC's `event_id` and MRMS's `storm_id` are different ID spaces (MRMS should
-have shipped with event_id directly, but doesn't yet — see the TEMPORARY
-block below). This script:
-  1. Translates MRMS storm_id -> event_id via events_original.csv, then joins
-     events on event_id.
+MRMS's `storm_id` is the same ID as AORC's `event_id` (aggregate_events.py
+names its files storm_<event_id>_15min.nc). This script:
+  1. Joins AORC and MRMS on event_id (MRMS storm_id cast to str).
   2. Aligns catchments by ID (inner join on divide_id / catchment strings).
   3. Writes a combined (event, time_step, catchment) NetCDF with variables
      from both sources.
@@ -41,16 +39,7 @@ from pathlib import Path
 
 import netCDF4
 import numpy as np
-import pandas as pd
-
-# TEMPORARY: MRMS's aggregate_events.py writes `storm_id` (an internal storm
-# index) instead of `event_id` — this should be fixed upstream so the two
-# files share a real `event_id`. Until then, translate storm_id -> event_id
-# here using the original manifest's storm_index/event_ids crosswalk.
-_TEMP_MANIFEST = "/Users/leoglonz/Desktop/noaa/data/upper_neuse/events.csv"
-_TEMP_STORM_COL = "storm_index"
-_TEMP_EVENT_COL = "event_ids"
-##################
+from tqdm.auto import tqdm
 
 
 def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
@@ -108,27 +97,11 @@ def main() -> None:
     nc_mrms = netCDF4.Dataset(args.mrms, "r")
 
     aorc_event_ids = _load_str_var(nc_aorc, "event_id")
-    mrms_storm_ids = np.array(nc_mrms.variables["storm_id"][:], dtype=np.int32)
-
-    # TEMPORARY: translate MRMS storm_id -> event_id via the original manifest
-    # (see _TEMP_MANIFEST note above). Remove once aggregate_events.py writes
-    # event_id directly.
-    mdf = pd.read_csv(_TEMP_MANIFEST)
-    mdf = mdf.dropna(subset=[_TEMP_STORM_COL, _TEMP_EVENT_COL])
-    storm_to_event = dict(
-        zip(
-            mdf[_TEMP_STORM_COL].astype(int),
-            mdf[_TEMP_EVENT_COL].astype(int).astype(str),
-        ),
-    )
     mrms_event_ids = np.array(
-        [storm_to_event.get(int(sid)) for sid in mrms_storm_ids],
+        [str(int(sid)) for sid in nc_mrms.variables["storm_id"][:]],
         dtype=object,
     )
-    event_to_mrms_idx = {
-        eid: i for i, eid in enumerate(mrms_event_ids) if eid is not None
-    }
-    ##################
+    event_to_mrms_idx = {eid: i for i, eid in enumerate(mrms_event_ids)}
 
     # build aligned event list: iterate AORC order, keep events present in MRMS
     aorc_indices, mrms_indices, event_ids = [], [], []
@@ -299,7 +272,9 @@ def main() -> None:
     )
 
     print(f"Writing {n_events} events ...")
-    for out_i, (ai, mi) in enumerate(zip(aorc_indices, mrms_indices)):
+    for out_i, (ai, mi) in tqdm(
+        enumerate(zip(aorc_indices, mrms_indices)), total=n_events, desc="Writing events",
+    ):
         ns = int(out_n_steps[out_i])
 
         dep_row = nc_mrms.variables["P"][mi, :ns, :][:, mrms_ci]
@@ -309,9 +284,6 @@ def main() -> None:
         v_dep[out_i, :ns, :] = dep_row
         v_tmp[out_i, :ns, :] = tmp_row
         v_pet[out_i, :ns, :] = pet_row
-
-        if (out_i + 1) % 20 == 0 or out_i == n_events - 1:
-            print(f"  {out_i + 1}/{n_events}")
 
     nc_aorc.close()
     nc_mrms.close()

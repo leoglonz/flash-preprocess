@@ -63,38 +63,33 @@ def _scan_files(input_dir: str, pattern: str, allowed_ids: set | None) -> list[d
 
 
 def _read_meta(records: list[dict]) -> tuple[np.ndarray, int, np.ndarray, np.ndarray]:
-    """First pass: read n_steps and time bounds from each file.
+    """First pass: read n_steps, time bounds, and the union of catchments.
+
+    Each event file only carries the catchments in that event's own
+    upstream basin (varies per gage), so the output catchment axis is the
+    union across all events; events missing a given catchment are left
+    NaN there (same padding convention as the time axis).
 
     Returns
     -------
     n_steps_arr   int32 array (n_events,)
     max_steps     int
     ts_starts     float64 array (n_events,)  time[0] in source units
-    catchments_ref
+    catchments    sorted object array of all divide_ids seen across events
     """
     n_steps_arr = np.empty(len(records), dtype=np.int32)
     ts_starts = np.empty(len(records), dtype=np.float64)
-    catchments_ref = None
+    all_cats: set[str] = set()
 
     for i, rec in enumerate(records):
         ds = netCDF4.Dataset(rec['path'], "r")
         n_steps_arr[i] = ds.dimensions['time'].size
         ts_starts[i] = float(ds.variables['time'][0])
-
-        cats = ds.variables['divide_id'][:]
-        if catchments_ref is None:
-            catchments_ref = np.array(cats, dtype=object)
-        elif len(cats) != len(catchments_ref) or not np.array_equal(
-            cats,
-            catchments_ref,
-        ):
-            print(
-                f"  WARNING: {rec['path']} has different catchments — results may be wrong",
-            )
-
+        all_cats.update(ds.variables['divide_id'][:].tolist())
         ds.close()
 
-    return n_steps_arr, int(n_steps_arr.max()), ts_starts, catchments_ref
+    catchments = np.array(sorted(all_cats), dtype=object)
+    return n_steps_arr, int(n_steps_arr.max()), ts_starts, catchments
 
 
 def main():
@@ -243,16 +238,20 @@ def main():
     v_data.long_name = "MRMS precipitation depth"
     v_data.coordinates = "storm_id n_steps ts_start ts_end divide_id"
 
-    # second pass: stream each event into the output
+    catchment_idx = {c: j for j, c in enumerate(catchments.tolist())}
+
+    # second pass: stream each event into the output, scattering its own
+    # catchments into the shared global catchment axis
     for i, rec in enumerate(records):
         ds = netCDF4.Dataset(rec['path'], 'r')
-        data = ds.variables[args.src_var][:]  # (time, catchment)
+        data = ds.variables[args.src_var][:]  # (time, catchment) — event-local catchments
+        cats = ds.variables['divide_id'][:]
         ds.close()
-        # transpose to (catchment, time) then write (event, time_step, catchment)
+
         n = data.shape[0]
-        v_data[i, :n, :] = (
-            data  # source shape: (time, catchment) → (event, time_step, catchment)
-        )
+        cols = np.array([catchment_idx[c] for c in cats])
+        v_data[i, :n, cols] = data  # (n, len(cols)) matches (time, catchment)
+
         if (i + 1) % 20 == 0 or i == n_events - 1:
             print(f"  {i + 1}/{n_events} events written")
 

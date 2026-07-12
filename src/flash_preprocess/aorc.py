@@ -1,6 +1,7 @@
 """Core AORC spatial extraction and disaggregation utilities."""
 
 import atexit
+import os
 from multiprocessing.pool import ThreadPool
 
 import dask
@@ -9,7 +10,9 @@ import s3fs
 import xarray as xr
 from scipy.sparse import csr_matrix
 
-_pool = ThreadPool(16)
+# S3 zarr reads are I/O-bound (network latency, not CPU), so this pool can
+# run far larger than the core count. Override via env var if S3 throttles.
+_pool = ThreadPool(int(os.environ.get('AORC_S3_THREADS', 64)))
 dask.config.set(pool=_pool)
 atexit.register(_pool.terminate)
 

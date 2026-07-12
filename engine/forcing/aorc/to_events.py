@@ -43,20 +43,21 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 import pandas as pd
+from tqdm.auto import tqdm
 
 from flash_preprocess.aorc import disaggregate_to_15min
 from flash_preprocess.pet import penman_monteith_pet
 
 
-_WARMUP_DAYS = 30.0       # desired hourly warmup duration before the 5-day window
-_PRE_EVENT_DAYS = 2.5    # half of 5-day event window (window = centroid ± 2.5d)
+_WARMUP_DAYS = 30.0  # desired hourly warmup duration before the 5-day window
+_PRE_EVENT_DAYS = 2.5  # half of 5-day event window (window = centroid ± 2.5d)
 # Lookback from centroid to warmup start: warmup + pre-event half-window
 _ANTECEDENT_DAYS = _WARMUP_DAYS + _PRE_EVENT_DAYS  # 32.5 days
 
-_MAX_HOURLY = int(_WARMUP_DAYS * 24)          # 720
+_MAX_HOURLY = int(_WARMUP_DAYS * 24)  # 720
 _MAX_15MIN = int(2 * _PRE_EVENT_DAYS * 24 * 4)  # 480
 
-_EVENT_ID_COL = 'event_ids'
+_EVENT_ID_COL = 'event_id'
 _BEGIN_COL = 'BEGIN_DATE_TIME'
 _END_COL = 'END_DATE_TIME'
 _GAGE_ID_COL = 'STAID'
@@ -252,11 +253,11 @@ def main() -> None:
 
     # Pre-pass: filter to events with data in the forcing file
     valid_rows, skipped = [], 0
-    for _, row in df.iterrows():
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Filtering events"):
         centroid = np.datetime64(row['_centroid'], 'm')
         ant_mask, evt_mask, _, _ = _event_masks(centroid, time_dt)
         if not ant_mask.any() or not evt_mask.any():
-            print(f"  [{row['_event_id']}] SKIP: time window not in forcing file")
+            tqdm.write(f"  [{row['_event_id']}] SKIP: time window not in forcing file")
             skipped += 1
         else:
             valid_rows.append(row)
@@ -304,7 +305,7 @@ def main() -> None:
     print(f"Writing {hourly_path.name} and {min15_path.name} ...")
     t_total = _time.time()
 
-    for i, row in enumerate(valid_rows):
+    for i, row in tqdm(enumerate(valid_rows), total=n_events, desc="Writing events"):
         event_id = row['_event_id']
         centroid = np.datetime64(row['_centroid'], 'm')
         t0 = _time.time()

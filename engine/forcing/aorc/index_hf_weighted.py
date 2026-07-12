@@ -103,16 +103,36 @@ def build_aorc_grid() -> xr.Dataset:
     return grid
 
 
+# Below this many catchments, exact_extract's single vectorized call over
+# the whole GeoDataFrame beats spinning up worker processes -- each worker
+# pays full process-spawn + raster-pickling cost regardless of how little
+# work it does.
+PARALLEL_THRESHOLD = 500
+
+
 def compute_weights_parallel(gdf_4326, grid_ds, n_workers=None):
     """Compute exactextract cell_id/coverage for every catchment in gdf_4326.
 
     Returns a DataFrame indexed by divide_id with columns [cell_id, coverage].
     """
+    wkt = gdf_4326.crs.to_wkt()
+
+    if len(gdf_4326) < PARALLEL_THRESHOLD:
+        print(f"  Computing area weights ({len(gdf_4326)} catchments, single process)...")
+        return get_cell_weights(grid_ds, gdf_4326, wkt)
+
     if n_workers is None:
         n_workers = max(1, multiprocessing.cpu_count() - 1)
+    # one catchment per worker at minimum, cap around 16 to bound
+    # process-spawn/raster-pickling overhead
+    n_workers = max(1, min(n_workers, len(gdf_4326) // 50, 16))
 
-    wkt = gdf_4326.crs.to_wkt()
-    chunks = np.array_split(gdf_4326, n_workers)
+    # np.array_split on a GeoDataFrame degrades chunks to plain numpy
+    # arrays in geopandas >=1.0, which exactextract's prep_vec rejects
+    # with "Unhandled feature datatype" -- split by iloc instead to keep
+    # each chunk a GeoDataFrame.
+    idx_splits = np.array_split(np.arange(len(gdf_4326)), n_workers)
+    chunks = [gdf_4326.iloc[idx] for idx in idx_splits if len(idx) > 0]
 
     print(
         f"  Computing area weights ({len(gdf_4326)} catchments, {n_workers} workers)...",

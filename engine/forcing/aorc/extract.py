@@ -43,6 +43,7 @@ from datetime import datetime, timedelta
 
 import netCDF4
 import numpy as np
+from dask.diagnostics import ProgressBar
 
 from flash_preprocess.aorc import (
     VARIABLE_LIST,
@@ -366,7 +367,8 @@ def main():
     # fetch all variables in a single dask graph execution (parallel S3 reads)
     print(f"  Fetching all {len(args.variables)} variables from zarr...")
     t_fetch = time.time()
-    ds_computed = ds[list(args.variables)].compute()
+    with ProgressBar():
+        ds_computed = ds[list(args.variables)].compute()
     print(f"  Fetch complete ({time.time() - t_fetch:.1f}s)")
 
     print(f"Streaming to {nc_path} ({n_basins} catchments * {n_steps} steps)")
