@@ -272,11 +272,13 @@ def build_aorc_grid() -> xr.Dataset:
     return xr.Dataset({"dummy": (["y", "x"], dummy)}, coords={"y": lat, "x": lon})
 
 
-def _compute_weights(gdf_4326: gpd.GeoDataFrame, grid_ds: xr.Dataset) -> pd.DataFrame:
+def _compute_weights(gdf_4326: gpd.GeoDataFrame, grid_ds: xr.Dataset, max_workers: int | None = None) -> pd.DataFrame:
     wkt = gdf_4326.crs.to_wkt()
     if len(gdf_4326) < _WEIGHT_PARALLEL_THRESHOLD:
         return get_cell_weights(grid_ds, gdf_4326, wkt)
-    n_workers = max(1, min(multiprocessing.cpu_count() - 1, len(gdf_4326) // 50, 16))
+    if max_workers is None:
+        max_workers = multiprocessing.cpu_count() - 1
+    n_workers = max(1, min(max_workers, len(gdf_4326) // 50, 16))
     idx_splits = np.array_split(np.arange(len(gdf_4326)), n_workers)
     chunks = [gdf_4326.iloc[idx] for idx in idx_splits if len(idx) > 0]
     with multiprocessing.Pool(n_workers) as pool:
@@ -285,7 +287,7 @@ def _compute_weights(gdf_4326: gpd.GeoDataFrame, grid_ds: xr.Dataset) -> pd.Data
 
 
 def build_weighted_crosswalk(divide_ids, catchments_master: gpd.GeoDataFrame, cache_dir: Path,
-                              tag: str = "") -> dict:
+                              tag: str = "", max_workers: int | None = None) -> dict:
     """Area-weighted AORC-pixel <-> catchment crosswalk for `divide_ids`, cached
     per tag (VPU). Returns dict(station_ids, cell_ids_list, weights_list)."""
     cache_dir = Path(cache_dir)
@@ -298,7 +300,7 @@ def build_weighted_crosswalk(divide_ids, catchments_master: gpd.GeoDataFrame, ca
             return idx
 
     gdf = catchments_master[catchments_master["divide_id"].isin(divide_ids)][["divide_id", "geometry"]].to_crs(4326)
-    weights_df = _compute_weights(gdf, build_aorc_grid())
+    weights_df = _compute_weights(gdf, build_aorc_grid(), max_workers)
 
     station_ids, cell_ids_list, weights_list = [], [], []
     for cat_id in sorted(divide_ids):
@@ -445,7 +447,10 @@ def _catchment_pet(vd: dict) -> np.ndarray:
 def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
                  out_hr_nc: Path, out_15min_nc: Path, divide_id_of: dict,
                  antecedent_days: float = ANTECEDENT_DAYS, max_15min_steps: int = 481):
-    ds = open_shards(shard_dir)
+    # Eager-load once: shards are netCDF4-backed dask arrays, so repeated
+    # per-event/per-variable .isel().values calls below would otherwise
+    # re-hit disk for every slice instead of just indexing an in-memory array.
+    ds = open_shards(shard_dir).load()
     time_dt = pd.DatetimeIndex(ds["time"].values)
     W, cat_lats, cat_lons = _catchment_metadata(ds, weight_idx)
     n_basins = len(weight_idx["station_ids"])

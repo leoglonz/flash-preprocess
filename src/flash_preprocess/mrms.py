@@ -665,9 +665,17 @@ def _run_pass(days, todo_by_day, bbox, fs, mask_negative, pool, bar, shard_dir, 
                 _flush_day(d)
 
             if bar is not None:
-                bar.update(1)
+                # set_postfix() defaults to refresh=True -- an IMMEDIATE
+                # terminal write on every single call, unlike update() which
+                # respects tqdm's own mininterval throttling. At 100+/s this
+                # was 100+ synchronous terminal writes per second on the one
+                # thread that also routes every result and resubmits new
+                # work -- a real bottleneck, worse over a laggy SSH session.
+                # refresh=False lets update()'s already-throttled refresh
+                # pick up the postfix text on its next scheduled write.
                 bar.set_postfix(day=f"{d:%Y-%m-%d}", miss=day_stats[d]["missing"],
-                                 err=day_stats[d]["errors"])
+                                 err=day_stats[d]["errors"], refresh=False)
+                bar.update(1)
 
             _submit_next()
 
