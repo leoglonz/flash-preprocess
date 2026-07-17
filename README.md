@@ -58,34 +58,46 @@ This repository serves as a library of data aggregation and preprocessing script
 
 # Wukong
 
-python engine/geo/assign_gage_catchment.py \
-  --csv /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv \
-  --gpkg /gpfs/leoglonz/sub_hourly/data/conus_nextgen.gpkg \
-  --staid-col STAID --lat-col gage_lat --lon-col gage_lon \
-
-python ./engine/geo/extract_hf.py --csv /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv  --gpkg /gpfs/leoglonz/sub_hourly/data/conus_nextgen.gpkg --output-dir /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs
+python engine/streamflow/usgs/download_discharge.py --events /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/events.csv --start 2020-01-01 --end 2025-12-31 --raw-cache /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/usgs_discharge_raw.csv --output /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/usgs_discharge.csv
 
 
-python engine/forcing/aorc/index_hf_weighted.py --csv /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv --upstream --output /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/weighted_index_dict.pkl --hydrofabric /gpfs/leoglonz/sub_hourly/data/conus_nextgen.gpkg
-Loaded 12 catchments from /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv (col: gage_cat-id)
 
 
-python engine/forcing/aorc/extract.py --start 2020-01-01 --end 2025-12-31 --index /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/weighted_index_dict.pkl --output-dir /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs
+python engine/geo/gage_to_cat.py --csv /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/events_old.csv --gpkg /projects/mhpi/leoglonz/sub_hourly/data/conus_nextgen.gpkg --staid-col STAID --lat-col gage_lat --lon-col gage_lon --output /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/events.csv
+
+python ./engine/geo/extract_hf.py --csv /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/events.csv  --gpkg /projects/mhpi/leoglonz/sub_hourly/data/conus_nextgen.gpkg --output-dir /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15
 
 
-python engine/forcing/aorc/to_events.py --events /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv --forcing /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_extracted.nc --output-dir /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs
+python engine/forcing/aorc/index_hf_weighted.py --csv /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/events.csv --upstream --output /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/weighted_index_dict.pkl --hydrofabric /projects/mhpi/leoglonz/sub_hourly/data/conus_nextgen.gpkg
 
+
+python engine/forcing/aorc/extract.py --start 2020-01-01 --end 2025-12-31 --index /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15/weighted_index_dict.pkl --output-dir /projects/mhpi/leoglonz/sub_hourly/data/huc8_top15
+
+
+python engine/forcing/aorc/to_events.py --events /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv --forcing /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_extracted.nc --output-dir /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs
 
 
 
 
 
 python engine/forcing/mrms/aggregate_events.py \
-  --input-dir /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms \
-  --manifest /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv \
+  --input-dir /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms \
+  --manifest /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv \
   --id-col event_id \
-  --output /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc
+  --output /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc
 
 
 
-python engine/forcing/merge_15min.py --aorc /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_15min.nc --mrms /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc  --output /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/forcing_15min.nc
+python engine/forcing/merge_15min.py --aorc /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_15min.nc --mrms /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc  --output /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/forcing_15min.nc
+
+
+
+python engine/streamflow/usgs/to_events.py --forcing /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/forcing_15min.nc --csv /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/usgs_discharge.csv --output /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/streamflow.nc
+
+
+
+
+
+train-test split
+
+python example/flash_flood/explore_split_dates.py --forcing /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/forcing_15min.nc --streamflow /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/streamflow.nc --split 2020/01/01 2023/09/30 2023/10/01 2025/12/31

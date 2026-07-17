@@ -1,0 +1,61 @@
+r"""Rewrite an event-indexed forcing NetCDF without zlib compression.
+
+FlashHydroLoader eager-loads these files fully into memory on every process
+start (to avoid per-event HDF5 lock contention during training/eval). For
+zlib-compressed files that means paying single-threaded decompression cost
+on every run -- HDF5's global lock prevents parallelizing it across threads,
+even though the underlying disk I/O is essentially free (a raw read of a
+multi-GB file completes in under a second on GPFS here). Stripping
+compression trades disk space for a ~30-60x reduction in per-run load time.
+
+Usage
+-----
+    python engine/forcing/strip_compression.py \\
+        --input /path/to/aorc_hr.nc --output /path/to/aorc_hr_uncompressed.nc
+"""
+
+import argparse
+import time
+from pathlib import Path
+
+import xarray as xr
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument('--input', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+
+    print(f'Reading {args.input} (decompressing, one-time cost) ...')
+    t0 = time.time()
+    ds = xr.open_dataset(args.input).load()
+    print(f'  done ({time.time() - t0:.1f}s)')
+
+    # Build a minimal, netCDF4-backend-valid encoding per variable: no
+    # compression, but keep dtype/_FillValue/chunksizes where present (the
+    # rest of what open_dataset reports, e.g. szip/zstd/preferred_chunks,
+    # isn't accepted as a *write* encoding by this backend).
+    keep_keys = {'dtype', '_FillValue', 'chunksizes'}
+    encoding = {}
+    for name, var in ds.variables.items():
+        enc = {k: v for k, v in var.encoding.items() if k in keep_keys}
+        enc['zlib'] = False
+        encoding[name] = enc
+
+    print(f'Writing {args.output} (uncompressed) ...')
+    t1 = time.time()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_netcdf(args.output, encoding=encoding)
+    print(f'  done ({time.time() - t1:.1f}s)')
+
+    in_size = args.input.stat().st_size / 1e9
+    out_size = args.output.stat().st_size / 1e9
+    print(f'\n{args.input.name}: {in_size:.2f} GB -> {args.output.name}: {out_size:.2f} GB')
+
+
+if __name__ == '__main__':
+    main()
