@@ -949,7 +949,11 @@ def extract_all(manifest: pd.DataFrame, event_catchment_windows: pd.DataFrame,
     for i, r in enumerate(records):
         cols = [cat_idx[c] for c in r["divide_ids"]]
         n = r["n_steps"]
-        P[i, :n, cols] = r["depth"]
+        # P[i, :n, cols] mixes a scalar index with a slice and a fancy-index
+        # array separated by that slice -- numpy's advanced-indexing rule
+        # moves the fancy dimension to the front, so the assignment target
+        # is shape (len(cols), n), not (n, len(cols)); transpose to match.
+        P[i, :n, cols] = r["depth"].T
 
     Path(out_nc).parent.mkdir(parents=True, exist_ok=True)
     nc = netCDF4.Dataset(out_nc, "w", format="NETCDF4")
