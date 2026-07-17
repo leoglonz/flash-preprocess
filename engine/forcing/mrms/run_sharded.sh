@@ -5,10 +5,16 @@
 #
 # VPU 02 alone holds 65% of huc8_top15's 72,089 events -- splitting by VPU
 # (via --vpu-subset) would leave most instances idle while one does most of
-# the work. split_events_shards.py instead splits by row-index modulo N, so
-# every VPU's events are spread evenly across every shard regardless of VPU
-# boundaries; run_pipeline.py's --tag-suffix keeps each shard's per-VPU cache/
-# output paths from colliding with any other shard that also touches VPU 02.
+# the work. split_events_shards.py instead sorts events by time and cuts them
+# into N contiguous chunks, so every VPU's events are still spread evenly
+# across every shard (any time slice gets a proportional mix of all VPUs),
+# but each shard's date range stays mostly disjoint from the others' --
+# measured this against naive row-index-modulo-N splitting, which inflated
+# total download volume by ~565% (every shard ended up needing almost the
+# full ~5-year span independently); contiguous-by-time splitting brought that
+# down to ~2.3% overhead. run_pipeline.py's --tag-suffix keeps each shard's
+# per-VPU cache/output paths from colliding with any other shard that also
+# touches VPU 02.
 #
 # Hydrofabric + CONUS crosswalk caches are shared and reused (already built
 # under CACHE_DIR from the existing Neuse-only run) -- no priming step needed
