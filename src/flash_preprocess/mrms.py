@@ -487,6 +487,12 @@ def _fetch_bytes(ts, fs, session=None):
     return None
 
 
+# A live 100-worker run segfaulted twice. Initially suspected ecCodes (not
+# documented as thread-safe) and tried locking / process-isolating decode --
+# neither actually addressed it, and dmesg showed both crashes were inside
+# libhdf5 (netCDF4's backend, used by _read_existing/_write_day), not
+# eccodes. These decode functions are plain/unlocked/in-thread, same as
+# before any of that -- eccodes was never the confirmed cause.
 def _decode_precip_eccodes(raw_gz: bytes) -> xr.DataArray:
     grib = gzip.decompress(raw_gz)
     gid = eccodes.codes_new_from_message(grib)
@@ -667,12 +673,9 @@ def _run_pass(days, todo_by_day, bbox, fs, mask_negative, pool, bar, shard_dir, 
             if bar is not None:
                 # set_postfix() defaults to refresh=True -- an IMMEDIATE
                 # terminal write on every single call, unlike update() which
-                # respects tqdm's own mininterval throttling. At 100+/s this
-                # was 100+ synchronous terminal writes per second on the one
-                # thread that also routes every result and resubmits new
-                # work -- a real bottleneck, worse over a laggy SSH session.
-                # refresh=False lets update()'s already-throttled refresh
-                # pick up the postfix text on its next scheduled write.
+                # respects tqdm's own mininterval throttling. refresh=False
+                # lets update()'s already-throttled refresh pick up the
+                # postfix text on its next scheduled write instead.
                 bar.set_postfix(day=f"{d:%Y-%m-%d}", miss=day_stats[d]["missing"],
                                  err=day_stats[d]["errors"], refresh=False)
                 bar.update(1)
@@ -938,6 +941,16 @@ def extract_all(manifest: pd.DataFrame, event_catchment_windows: pd.DataFrame,
     cat_idx = {c: j for j, c in enumerate(all_cats)}
     n_ev, n_cat = len(records), len(all_cats)
 
+    # Build the full array in memory and write it in one bulk call below --
+    # a per-event write straight into a compressed netCDF chunk forces a
+    # decompress/recompress of that chunk on every call, which dominates
+    # runtime once there are thousands of events.
+    P = np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32)
+    for i, r in enumerate(records):
+        cols = [cat_idx[c] for c in r["divide_ids"]]
+        n = r["n_steps"]
+        P[i, :n, cols] = r["depth"]
+
     Path(out_nc).parent.mkdir(parents=True, exist_ok=True)
     nc = netCDF4.Dataset(out_nc, "w", format="NETCDF4")
     nc.createDimension("event", n_ev)
@@ -962,11 +975,7 @@ def extract_all(manifest: pd.DataFrame, event_catchment_windows: pd.DataFrame,
                              zlib=True, complevel=4, chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)))
     v_p.units = "mm [15 min]-1"
     v_p.long_name = "MRMS precipitation depth"
-
-    for i, r in enumerate(records):
-        cols = [cat_idx[c] for c in r["divide_ids"]]
-        n = r["n_steps"]
-        v_p[i, :n, cols] = r["depth"]
+    v_p[:] = P
 
     nc.close()
     print(f"wrote {out_nc}: {n_ev} events x {max_steps} steps x {n_cat} catchments")
@@ -988,33 +997,45 @@ def merge_parts(part_paths, out_nc):
     nc.createDimension("time_step", max_steps)
     nc.createDimension("catchment", n_cat)
 
-    v_sid = nc.createVariable("storm_id", "i4", ("event",))
-    v_ns = nc.createVariable("n_steps", "i4", ("event",))
+    # Assemble in memory and write each variable in one bulk call below --
+    # per-event writes straight into a compressed netCDF chunk force a
+    # decompress/recompress on every call, which dominates runtime once
+    # there are thousands of events.
+    storm_id = np.zeros(n_ev, dtype=np.int32)
+    n_steps = np.zeros(n_ev, dtype=np.int32)
+    ts_start = np.zeros(n_ev, dtype=np.float64)
+    ts_end = np.zeros(n_ev, dtype=np.float64)
+    P = np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32)
+
+    epoch = np.datetime64("1970-01-01T00:00", "m")
+    i = 0
+    for p in parts:
+        n = p.sizes["event"]
+        storm_id[i:i + n] = p["storm_id"].values
+        n_steps[i:i + n] = p["n_steps"].values
+        ts_start[i:i + n] = (p["ts_start"].values.astype("datetime64[m]") - epoch) / np.timedelta64(1, "m")
+        ts_end[i:i + n] = (p["ts_end"].values.astype("datetime64[m]") - epoch) / np.timedelta64(1, "m")
+        cols = np.array([cat_idx[c] for c in p["divide_id"].values.tolist()])
+        ns = p.sizes["time_step"]
+        P[i:i + n, :ns, cols] = p["P"].values
+        i += n
+        p.close()
+
+    v_sid = nc.createVariable("storm_id", "i4", ("event",)); v_sid[:] = storm_id
+    v_ns = nc.createVariable("n_steps", "i4", ("event",)); v_ns[:] = n_steps
     v_ts = nc.createVariable("ts_start", "f8", ("event",))
     v_ts.units = "minutes since 1970-01-01 00:00:00 UTC"
+    v_ts[:] = ts_start
     v_te = nc.createVariable("ts_end", "f8", ("event",))
     v_te.units = "minutes since 1970-01-01 00:00:00 UTC"
+    v_te[:] = ts_end
     v_cat = nc.createVariable("divide_id", str, ("catchment",))
     v_cat[:] = np.array(all_cats, dtype=object)
     v_p = nc.createVariable("P", "f4", ("event", "time_step", "catchment"), fill_value=np.nan,
                              zlib=True, complevel=4, chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)))
     v_p.units = "mm [15 min]-1"
     v_p.long_name = "MRMS precipitation depth"
-
-    epoch = np.datetime64("1970-01-01T00:00", "m")
-    i = 0
-    for p in parts:
-        n = p.sizes["event"]
-        v_sid[i:i + n] = p["storm_id"].values
-        v_ns[i:i + n] = p["n_steps"].values
-        v_ts[i:i + n] = (p["ts_start"].values.astype("datetime64[m]") - epoch) / np.timedelta64(1, "m")
-        v_te[i:i + n] = (p["ts_end"].values.astype("datetime64[m]") - epoch) / np.timedelta64(1, "m")
-        cols = [cat_idx[c] for c in p["divide_id"].values.tolist()]
-        for j in range(n):
-            steps = int(p["n_steps"].values[j])
-            v_p[i + j, :steps, cols] = p["P"].values[j, :steps, :]
-        i += n
-        p.close()
+    v_p[:] = P
 
     nc.close()
     print(f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events x {n_cat} catchments")

@@ -458,19 +458,35 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
     meta = dict(n_basins=n_basins, station_ids=weight_idx["station_ids"], cat_lats=cat_lats, cat_lons=cat_lons)
 
     n_events = len(manifest)
-    nc_hr = _create_output_nc(out_hr_nc, n_events, n_hours_ant, meta, {
-        "P": ("kg m-2", "Precipitation"),
-        "T": ("degC", "Air temperature at 2 m"),
-        "PET": ("mm h-1", "Penman-Monteith ET0 (FAO-56 hourly)"),
-    })
-    nc_15 = _create_output_nc(out_15min_nc, n_events, max_15min_steps, meta, {
-        "T": ("degC", "Air temperature at 2 m (interpolated)"),
-        "PET": ("mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"),
-    })
+
+    # Accumulate into plain numpy arrays and write each variable to disk in a
+    # single bulk call at the end -- a per-event netCDF4 write into a
+    # compressed chunk forces a decompress/recompress of that chunk on every
+    # call, which dominates runtime at thousands of events; one bulk write
+    # lets the library compress each chunk exactly once.
+    P_ant = np.full((n_events, n_hours_ant, n_basins), np.nan, dtype=np.float32)
+    T_ant = np.full((n_events, n_hours_ant, n_basins), np.nan, dtype=np.float32)
+    PET_ant = np.full((n_events, n_hours_ant, n_basins), np.nan, dtype=np.float32)
+    T_15 = np.full((n_events, max_15min_steps, n_basins), np.nan, dtype=np.float32)
+    PET_15 = np.full((n_events, max_15min_steps, n_basins), np.nan, dtype=np.float32)
+
+    event_ids = np.empty(n_events, dtype=object)
+    gage_ids = np.empty(n_events, dtype=object)
+    divide_ids_out = np.empty(n_events, dtype=object)
+    n_steps_hr = np.zeros(n_events, dtype=np.int32)
+    ts_start_hr = np.zeros(n_events, dtype=np.float64)
+    ts_end_hr = np.zeros(n_events, dtype=np.float64)
+    n_steps_15 = np.zeros(n_events, dtype=np.int32)
+    ts_start_15 = np.zeros(n_events, dtype=np.float64)
+    ts_end_15 = np.zeros(n_events, dtype=np.float64)
 
     skipped = []
     for i, row in enumerate(tqdm(manifest.itertuples(), total=n_events, desc="extract")):
         sid = str(row.storm_index)
+        event_ids[i] = sid
+        gage_ids[i] = row.recording_gage_STAID
+        divide_ids_out[i] = divide_id_of.get(sid, "")
+
         ant_start = row.win_start - pd.Timedelta(days=antecedent_days)
         ant_mask = (time_dt >= ant_start) & (time_dt < row.win_start)
         evt_mask = (time_dt >= row.win_start) & (time_dt <= row.win_end)
@@ -486,15 +502,12 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
         pet_ant = _catchment_pet({**cat_ant, "TMP_2maboveground": temp_ant_c})
         time_ant = time_dt[ant_mask]
 
-        nc_hr.variables["event_id"][i] = sid
-        nc_hr.variables["n_steps"][i] = n_hours_ant
-        nc_hr.variables["ts_start"][i] = _mins(time_ant[0])
-        nc_hr.variables["ts_end"][i] = _mins(time_ant[-1])
-        nc_hr.variables["event_gage_id"][i] = row.recording_gage_STAID
-        nc_hr.variables["event_divide_id"][i] = divide_id_of.get(sid, "")
-        nc_hr.variables["P"][i, :, :] = cat_ant["APCP_surface"].T
-        nc_hr.variables["T"][i, :, :] = temp_ant_c.T
-        nc_hr.variables["PET"][i, :, :] = pet_ant.T
+        n_steps_hr[i] = n_hours_ant
+        ts_start_hr[i] = _mins(time_ant[0])
+        ts_end_hr[i] = _mins(time_ant[-1])
+        P_ant[i] = cat_ant["APCP_surface"].T
+        T_ant[i] = temp_ant_c.T
+        PET_ant[i] = pet_ant.T
 
         raw_evt = {v: ds[v].isel(time=evt_mask).values for v in VARIABLE_LIST}
         cat_evt = {v: weighted_mean(raw_evt[v], W) for v in raw_evt}
@@ -505,18 +518,44 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
         pet_15min = np.repeat(pet_evt / 4.0, 4, axis=1)
         n15 = min(tmp_15min.shape[1], max_15min_steps)
 
-        nc_15.variables["event_id"][i] = sid
-        nc_15.variables["n_steps"][i] = n15
-        nc_15.variables["ts_start"][i] = _mins(time_evt[0])
-        nc_15.variables["ts_end"][i] = _mins(time_evt[0]) + (n15 - 1) * 15
-        nc_15.variables["event_gage_id"][i] = row.recording_gage_STAID
-        nc_15.variables["event_divide_id"][i] = divide_id_of.get(sid, "")
-        nc_15.variables["T"][i, :n15, :] = tmp_15min[:, :n15].T
-        nc_15.variables["PET"][i, :n15, :] = pet_15min[:, :n15].T
+        n_steps_15[i] = n15
+        ts_start_15[i] = _mins(time_evt[0])
+        ts_end_15[i] = _mins(time_evt[0]) + (n15 - 1) * 15
+        T_15[i, :n15, :] = tmp_15min[:, :n15].T
+        PET_15[i, :n15, :] = pet_15min[:, :n15].T
 
     ds.close()
+
+    nc_hr = _create_output_nc(out_hr_nc, n_events, n_hours_ant, meta, {
+        "P": ("kg m-2", "Precipitation"),
+        "T": ("degC", "Air temperature at 2 m"),
+        "PET": ("mm h-1", "Penman-Monteith ET0 (FAO-56 hourly)"),
+    })
+    nc_hr.variables["event_id"][:] = event_ids
+    nc_hr.variables["n_steps"][:] = n_steps_hr
+    nc_hr.variables["ts_start"][:] = ts_start_hr
+    nc_hr.variables["ts_end"][:] = ts_end_hr
+    nc_hr.variables["event_gage_id"][:] = gage_ids
+    nc_hr.variables["event_divide_id"][:] = divide_ids_out
+    nc_hr.variables["P"][:] = P_ant
+    nc_hr.variables["T"][:] = T_ant
+    nc_hr.variables["PET"][:] = PET_ant
     nc_hr.close()
+
+    nc_15 = _create_output_nc(out_15min_nc, n_events, max_15min_steps, meta, {
+        "T": ("degC", "Air temperature at 2 m (interpolated)"),
+        "PET": ("mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"),
+    })
+    nc_15.variables["event_id"][:] = event_ids
+    nc_15.variables["n_steps"][:] = n_steps_15
+    nc_15.variables["ts_start"][:] = ts_start_15
+    nc_15.variables["ts_end"][:] = ts_end_15
+    nc_15.variables["event_gage_id"][:] = gage_ids
+    nc_15.variables["event_divide_id"][:] = divide_ids_out
+    nc_15.variables["T"][:] = T_15
+    nc_15.variables["PET"][:] = PET_15
     nc_15.close()
+
     if skipped:
         pd.DataFrame(skipped).to_csv(Path(out_hr_nc).with_name("extraction_skipped_events.csv"), index=False)
         print(f"WARNING: {len(skipped)} / {n_events} events skipped (incomplete shard coverage) -- "
@@ -533,51 +572,62 @@ def _merge_event_parts(part_paths, out_nc, data_vars: dict):
     max_steps = max(p.sizes["time_step"] for p in parts)
     n_ev, n_cat = sum(p.sizes["event"] for p in parts), len(all_cats)
 
+    # Assemble full in-memory arrays and write each variable in one bulk
+    # call below -- writing part-by-part, event-by-event straight into a
+    # compressed netCDF variable (the previous approach) forces a
+    # decompress/recompress of the touched chunk on every call, which
+    # dominates runtime once there are thousands of events.
+    lat_out = np.full(n_cat, np.nan, dtype=np.float32)
+    lon_out = np.full(n_cat, np.nan, dtype=np.float32)
+    event_ids = np.empty(n_ev, dtype=object)
+    gage_ids = np.empty(n_ev, dtype=object)
+    divide_ids_out = np.empty(n_ev, dtype=object)
+    n_steps = np.zeros(n_ev, dtype=np.int32)
+    ts_start = np.zeros(n_ev, dtype=np.float64)
+    ts_end = np.zeros(n_ev, dtype=np.float64)
+    arrays = {name: np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32) for name in data_vars}
+
+    i = 0
+    for p in parts:
+        cols = np.array([cat_idx[c] for c in p["divide_id"].values.tolist()])
+        lat_out[cols] = p["latitude"].values
+        lon_out[cols] = p["longitude"].values
+        n, ns = p.sizes["event"], p.sizes["time_step"]
+        event_ids[i:i + n] = p["event_id"].values
+        gage_ids[i:i + n] = p["event_gage_id"].values
+        divide_ids_out[i:i + n] = p["event_divide_id"].values
+        n_steps[i:i + n] = p["n_steps"].values
+        ts_start[i:i + n] = p["ts_start"].values
+        ts_end[i:i + n] = p["ts_end"].values
+        for name in data_vars:
+            arrays[name][i:i + n, :ns, cols] = p[name].values
+        i += n
+        p.close()
+
     Path(out_nc).parent.mkdir(parents=True, exist_ok=True)
     nc = netCDF4.Dataset(out_nc, "w", format="NETCDF4")
     nc.createDimension("event", n_ev)
     nc.createDimension("time_step", max_steps)
     nc.createDimension("catchment", n_cat)
 
-    v_eid = nc.createVariable("event_id", str, ("event",))
-    v_ns = nc.createVariable("n_steps", "i4", ("event",))
+    nc.createVariable("event_id", str, ("event",))[:] = event_ids
+    nc.createVariable("n_steps", "i4", ("event",))[:] = n_steps
     v_ts = nc.createVariable("ts_start", "f8", ("event",)); v_ts.units = "minutes since 1970-01-01 00:00:00 UTC"
+    v_ts[:] = ts_start
     v_te = nc.createVariable("ts_end", "f8", ("event",)); v_te.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v_gid = nc.createVariable("event_gage_id", str, ("event",))
-    v_did = nc.createVariable("event_divide_id", str, ("event",))
-    v_cat = nc.createVariable("divide_id", str, ("catchment",)); v_cat[:] = np.array(all_cats, dtype=object)
-    v_lat = nc.createVariable("latitude", "f4", ("catchment",))
-    v_lon = nc.createVariable("longitude", "f4", ("catchment",))
+    v_te[:] = ts_end
+    nc.createVariable("event_gage_id", str, ("event",))[:] = gage_ids
+    nc.createVariable("event_divide_id", str, ("event",))[:] = divide_ids_out
+    nc.createVariable("divide_id", str, ("catchment",))[:] = np.array(all_cats, dtype=object)
+    nc.createVariable("latitude", "f4", ("catchment",))[:] = lat_out
+    nc.createVariable("longitude", "f4", ("catchment",))[:] = lon_out
 
-    lat_out = np.full(n_cat, np.nan, dtype=np.float32)
-    lon_out = np.full(n_cat, np.nan, dtype=np.float32)
-    vwriters = {}
     for name, (units, long_name) in data_vars.items():
         nv = nc.createVariable(name, "f4", ("event", "time_step", "catchment"), fill_value=np.nan,
                                 zlib=True, complevel=4, chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)))
         nv.units, nv.long_name = units, long_name
-        vwriters[name] = nv
+        nv[:] = arrays[name]
 
-    i = 0
-    for p in parts:
-        cols = [cat_idx[c] for c in p["divide_id"].values.tolist()]
-        lat_out[cols] = p["latitude"].values
-        lon_out[cols] = p["longitude"].values
-        n, ns = p.sizes["event"], p.sizes["time_step"]
-        v_eid[i:i + n] = p["event_id"].values
-        v_ns[i:i + n] = p["n_steps"].values
-        v_ts[i:i + n] = p["ts_start"].values
-        v_te[i:i + n] = p["ts_end"].values
-        v_gid[i:i + n] = p["event_gage_id"].values
-        v_did[i:i + n] = p["event_divide_id"].values
-        for k in range(n):
-            for name in data_vars:
-                vwriters[name][i + k, :ns, cols] = p[name].values[k]
-        i += n
-        p.close()
-
-    v_lat[:] = lat_out
-    v_lon[:] = lon_out
     nc.close()
     print(f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events x {n_cat} catchments")
 

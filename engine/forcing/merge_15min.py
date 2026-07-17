@@ -123,6 +123,24 @@ def main() -> None:
         f"not present in MRMS file)",
     )
 
+    # Both files' event windows come from the same build_manifest() logic,
+    # but only if both were built from run_pipeline.py runs with matching
+    # WINDOW_DAYS/CENTROID -- a stale file from an older config would merge
+    # silently, splicing MRMS precip for one time window onto AORC
+    # temperature/PET for a different one. Catch that here instead.
+    aorc_ts_start_chk = np.array(nc_aorc.variables["ts_start"][:], dtype=np.float64)
+    mrms_ts_start_chk = np.array(nc_mrms.variables["ts_start"][:], dtype=np.float64)
+    offset_min = aorc_ts_start_chk[aorc_indices] - mrms_ts_start_chk[mrms_indices]
+    bad = np.abs(offset_min) > 1.0  # allow <1 min for float rounding
+    if bad.any():
+        sys.exit(
+            f"{bad.sum()}/{n_events} matched events have AORC/MRMS window start times that "
+            f"disagree by more than a minute (median offset {np.median(offset_min[bad]):.0f} "
+            f"min, e.g. event {event_ids[np.argmax(bad)]}). The two files were likely built "
+            f"with different WINDOW_DAYS/CENTROID settings (or one is stale) -- regenerate "
+            f"both from the same run_pipeline.py config before merging.",
+        )
+
     # align catchments: inner join, report drops from each side
     aorc_cats = _load_str_var(nc_aorc, "divide_id")
     mrms_cats = _load_str_var(nc_mrms, "divide_id")
@@ -162,7 +180,7 @@ def main() -> None:
     # read n_steps and event_start from AORC; n_steps from MRMS for crosscheck
     aorc_n_steps = np.array(nc_aorc.variables["n_steps"][:], dtype=np.int32)
     mrms_n_steps = np.array(nc_mrms.variables["n_steps"][:], dtype=np.int32)
-    aorc_ts_starts = np.array(nc_aorc.variables["ts_start"][:], dtype=np.float64)
+    aorc_ts_starts = aorc_ts_start_chk
     aorc_ts_ends = np.array(nc_aorc.variables["ts_end"][:], dtype=np.float64)
     aorc_lats = np.array(nc_aorc.variables["latitude"][:], dtype=np.float32)
     aorc_lons = np.array(nc_aorc.variables["longitude"][:], dtype=np.float32)
