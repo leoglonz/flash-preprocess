@@ -7,8 +7,8 @@ Outputs:
     - 1-hr resolution forcing NetCDF for all events (antecedent days
       preceding the 15-min window)
 
-Edit the CONFIG block at the top of this file to set all options. Run with:
-    python engine/forcing/aorc/run_pipeline.py
+Edit the CONFIG block at the top of this file to set all options, or
+override per-invocation via CLI flags (see below).
 """
 
 import shutil
@@ -23,12 +23,14 @@ from flash_preprocess.aorc import (
     merge_hr_parts,
     merge_15min_parts,
 )
+from flash_preprocess.paths import CACHE_DIR as _CACHE_DIR
+from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
 
 
 # CONFIG -------------------------- #
 # Flash flood event registry.
 #   None = all events in EVENTS_CSV; else e.g. [1266, 4703]
-EVENT_PATH = "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv"
+EVENT_PATH = _EVENTS_CSV
 EVENT_IDS = None
 
 # VPUs to process in this runtime.
@@ -37,17 +39,17 @@ EVENT_IDS = None
 VPU_SUBSET = None
 
 # Where to cache per-VPU AORC windows, weights, and NetCDF shards.
-CACHE_DIR = "/projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess/neuse"
+CACHE_DIR = _CACHE_DIR
 
 # Output NetCDF paths for 1) merged hourly and 2) 15-min AORC forcing.
-OUT_HR_NC = "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_hr.nc"
-OUT_15MIN_NC = "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_15min.nc"
+OUT_HR_NC = _CACHE_DIR / 'aorc_hr.nc'
+OUT_15MIN_NC = _CACHE_DIR / 'aorc_15min.nc'
 
 # More workers == faster. Make sure you have enough CPUs (=workers) and RAM.
 MAX_WORKERS = 16
 
 # Total width of each event's forcing window (days), centered on event.
-# Must match WINDOW_DAYS used for MRMS run.
+#    Must match WINDOW_DAYS used for MRMS run.
 WINDOW_DAYS = 6.0
 
 # Event window centroid method.

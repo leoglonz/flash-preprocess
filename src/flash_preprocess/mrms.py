@@ -1225,23 +1225,16 @@ def extract_all(
             f"WARNING: {len(failed)} events could not be extracted at all -- logged to {failed_csv}",
         )
 
-    all_cats = sorted(set().union(*[set(r['divide_ids']) for r in records]))
-    cat_idx = {c: j for j, c in enumerate(all_cats)}
-    n_ev, n_cat = len(records), len(all_cats)
-
-    # Build the full array in memory and write it in one bulk call
-    P = np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32)
-    for i, r in enumerate(records):
-        cols = [cat_idx[c] for c in r['divide_ids']]
-        n = r['n_steps']
-
-        P[i, :n, cols] = r['depth'].T
+    n_ev = len(records)
+    n_entries = [len(r['divide_ids']) for r in records]
+    total_entries = sum(n_entries)
 
     Path(out_nc).parent.mkdir(parents=True, exist_ok=True)
     nc = netCDF4.Dataset(out_nc, 'w', format='NETCDF4')
     nc.createDimension('event', n_ev)
+    nc.createDimension('ptr', n_ev + 1)
+    nc.createDimension('entry', total_entries)
     nc.createDimension('time_step', max_steps)
-    nc.createDimension('catchment', n_cat)
 
     nc.createVariable('storm_id', 'i4', ('event',))[:] = np.array(
         [r['storm_id'] for r in records],
@@ -1264,97 +1257,122 @@ def extract_all(
         (np.datetime64(r['ts_end']) - epoch) / np.timedelta64(1, 'm') for r in records
     ]
 
-    v_cat = nc.createVariable('divide_id', str, ('catchment',))
-    v_cat[:] = np.array(all_cats, dtype=object)
+    # CSR/ragged catchment layout: each event owns entries
+    # [cat_ptr[i], cat_ptr[i+1]) into the flat 'entry' dimension, holding only
+    # that event's own upstream catchments -- no union across events, so
+    # storage scales with actual data, not events x every-catchment-anywhere.
+    cat_ptr = np.zeros(n_ev + 1, dtype=np.int64)
+    cat_ptr[1:] = np.cumsum(n_entries)
+    nc.createVariable('cat_ptr', 'i8', ('ptr',))[:] = cat_ptr
 
+    v_cat = nc.createVariable('divide_id', str, ('entry',))
     v_p = nc.createVariable(
         'P',
         'f4',
-        ('event', 'time_step', 'catchment'),
+        ('entry', 'time_step'),
         fill_value=np.nan,
         zlib=True,
         complevel=4,
-        chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)),
+        chunksizes=(min(total_entries, 4096), max_steps),
     )
     v_p.units = 'mm [15 min]-1'
     v_p.long_name = 'MRMS precipitation depth'
-    v_p[:] = P
+
+    # Write per event so no array spanning all events is ever held in memory.
+    for i, r in enumerate(tqdm(records, desc='write')):
+        lo, hi = int(cat_ptr[i]), int(cat_ptr[i + 1])
+        v_cat[lo:hi] = np.array(r['divide_ids'], dtype=object)
+        n = r['n_steps']
+        block = np.full((hi - lo, max_steps), np.nan, dtype=np.float32)
+        block[:, :n] = r['depth'].T
+        v_p[lo:hi, :] = block
 
     nc.close()
-    print(f"wrote {out_nc}: {n_ev} events x {max_steps} steps x {n_cat} catchments")
+    print(
+        f"wrote {out_nc}: {n_ev} events x {max_steps} steps, "
+        f"{total_entries} event-catchment entries (ragged)",
+    )
 
 
 #### merge per-VPU files into one combined NetCDF
 
 
 def merge_parts(part_paths: Iterable[Path], out_nc: Path) -> None:
-    """Merge per-VPU MRMS part files into out_nc."""
-    parts = [xr.open_dataset(p) for p in part_paths]
-    all_cats = sorted(
-        set().union(*[set(p['divide_id'].values.tolist()) for p in parts]),
-    )
-    cat_idx = {c: j for j, c in enumerate(all_cats)}
-    max_steps = max(p.sizes['time_step'] for p in parts)
-    n_ev = sum(p.sizes['event'] for p in parts)
-    n_cat = len(all_cats)
+    """Concatenate ragged (CSR) per-event MRMS part files into out_nc.
+
+    Each part stores per-event catchments as entries into a flat 'entry'
+    dimension (see ``extract_all``) -- no catchment axis shared across
+    events, so merging never unions catchments and this is a straight
+    concatenation along event/entry space. Streams part-by-part so peak
+    memory is bounded by the single largest part, not the sum of all parts
+    -- this is what makes merging across VPUs/basins (disjoint catchment
+    sets) tractable; the old dense format scaled with the union of every
+    part's catchments times the sum of every part's events.
+    """
+    part_paths = list(part_paths)
+    ncs = [netCDF4.Dataset(p, 'r') for p in part_paths]
+
+    n_ev = sum(nc.dimensions['event'].size for nc in ncs)
+    max_steps = max(nc.dimensions['time_step'].size for nc in ncs)
+    total_entries = sum(nc.dimensions['entry'].size for nc in ncs)
 
     Path(out_nc).parent.mkdir(parents=True, exist_ok=True)
-    nc = netCDF4.Dataset(out_nc, 'w', format='NETCDF4')
-    nc.createDimension('event', n_ev)
-    nc.createDimension('time_step', max_steps)
-    nc.createDimension('catchment', n_cat)
+    out = netCDF4.Dataset(out_nc, 'w', format='NETCDF4')
+    out.createDimension('event', n_ev)
+    out.createDimension('ptr', n_ev + 1)
+    out.createDimension('entry', total_entries)
+    out.createDimension('time_step', max_steps)
 
-    # Assemble in memory and write each variable in one bulk call.
-    storm_id = np.zeros(n_ev, dtype=np.int32)
-    n_steps = np.zeros(n_ev, dtype=np.int32)
-    ts_start = np.zeros(n_ev, dtype=np.float64)
-    ts_end = np.zeros(n_ev, dtype=np.float64)
-    P = np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32)
-
-    epoch = np.datetime64('1970-01-01T00:00', 'm')
-    i = 0
-    for p in parts:
-        n = p.sizes['event']
-        storm_id[i : i + n] = p['storm_id'].values
-        n_steps[i : i + n] = p['n_steps'].values
-        ts_start[i : i + n] = (
-            p['ts_start'].values.astype('datetime64[m]') - epoch
-        ) / np.timedelta64(1, 'm')
-        ts_end[i : i + n] = (
-            p['ts_end'].values.astype('datetime64[m]') - epoch
-        ) / np.timedelta64(1, 'm')
-        cols = np.array([cat_idx[c] for c in p['divide_id'].values.tolist()])
-        ns = p.sizes['time_step']
-        P[i : i + n, :ns, cols] = p['P'].values
-        i += n
-        p.close()
-
-    v_sid = nc.createVariable('storm_id', 'i4', ('event',))
-    v_sid[:] = storm_id
-    v_ns = nc.createVariable('n_steps', 'i4', ('event',))
-    v_ns[:] = n_steps
-    v_ts = nc.createVariable('ts_start', 'f8', ('event',))
+    v_sid = out.createVariable('storm_id', 'i4', ('event',))
+    v_ns = out.createVariable('n_steps', 'i4', ('event',))
+    v_ts = out.createVariable('ts_start', 'f8', ('event',))
     v_ts.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v_ts[:] = ts_start
-    v_te = nc.createVariable('ts_end', 'f8', ('event',))
+    v_te = out.createVariable('ts_end', 'f8', ('event',))
     v_te.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v_te[:] = ts_end
-    v_cat = nc.createVariable('divide_id', str, ('catchment',))
-    v_cat[:] = np.array(all_cats, dtype=object)
-    v_p = nc.createVariable(
+    v_ptr = out.createVariable('cat_ptr', 'i8', ('ptr',))
+    v_cat = out.createVariable('divide_id', str, ('entry',))
+    v_p = out.createVariable(
         'P',
         'f4',
-        ('event', 'time_step', 'catchment'),
+        ('entry', 'time_step'),
         fill_value=np.nan,
         zlib=True,
         complevel=4,
-        chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)),
+        chunksizes=(min(total_entries, 4096), max_steps),
     )
     v_p.units = 'mm [15 min]-1'
     v_p.long_name = 'MRMS precipitation depth'
-    v_p[:] = P
 
-    nc.close()
+    e_off, p_off = 0, 0
+    for nc in tqdm(ncs, desc='merge parts'):
+        n = nc.dimensions['event'].size
+        ne = nc.dimensions['entry'].size
+        ns = nc.dimensions['time_step'].size
+
+        v_sid[e_off : e_off + n] = nc.variables['storm_id'][:]
+        v_ns[e_off : e_off + n] = nc.variables['n_steps'][:]
+        v_ts[e_off : e_off + n] = nc.variables['ts_start'][:]
+        v_te[e_off : e_off + n] = nc.variables['ts_end'][:]
+        # Drop each part's own trailing sentinel (total entries of that part)
+        # and rebase its offsets onto this output's running entry offset.
+        v_ptr[e_off : e_off + n] = np.asarray(nc.variables['cat_ptr'][:n]) + p_off
+        v_cat[p_off : p_off + ne] = nc.variables['divide_id'][:]
+
+        if ns == max_steps:
+            v_p[p_off : p_off + ne, :] = nc.variables['P'][:, :]
+        else:
+            block = np.full((ne, max_steps), np.nan, dtype=np.float32)
+            block[:, :ns] = nc.variables['P'][:, :]
+            v_p[p_off : p_off + ne, :] = block
+
+        e_off += n
+        p_off += ne
+        nc.close()
+
+    v_ptr[e_off] = p_off  # final CSR sentinel
+
+    out.close()
     print(
-        f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events x {n_cat} catchments",
+        f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events, "
+        f"{total_entries} event-catchment entries (ragged, no catchment union)",
     )

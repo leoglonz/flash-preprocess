@@ -1,3 +1,14 @@
+"""Download MRMS PrecipRate and extract 15-min catchment precipitation for a
+set of flash flood events.
+
+Outputs:
+    - 15-min resolution MRMS precipitation NetCDF for all events (window
+      centered on each event's centroid or peak flow time)
+
+Edit the CONFIG block at the top of this file to set all options, or
+override per-invocation via CLI flags (see below).
+"""
+
 import argparse
 import shutil
 from pathlib import Path
@@ -13,56 +24,54 @@ from flash_preprocess.mrms import (
     extract_all,
     merge_parts,
 )
+from flash_preprocess.paths import CACHE_DIR as _CACHE_DIR
+from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
 
 
-# CONFIG ------------------------------------------
-# Every value below is a default, overridable per-invocation via CLI flags
-# (see build_args()/parse_args()) -- this is what makes running many parallel
-# sharded instances possible without hand-editing this file per process; see
-# split_events_shards.py + run_sharded.sh.
-EVENTS_CSV = Path('/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv')
-EVENT_IDS = None  # None -> all events in EVENTS_CSV; else e.g. [1266, 4703]
+# CONFIG -------------------------- #
+# Flash flood event registry.
+#   None = all events in EVENTS_CSV; else e.g.
+EVENTS_CSV = _EVENTS_CSV
+EVENT_IDS = None
 
-# VPUs to process in this runtime. None -> every VPU present in EVENTS_CSV, all
-# in this one run, auto-merged into OUT_NC at the end. A list, e.g. ["03N"],
-# restricts this run to just those VPUs and writes a part-file per VPU under
-# CACHE_DIR/vpu_runs/<vpu><TAG_SUFFIX>/mrms_15min_part.nc -- run separate
-# invocations with disjoint VPU_SUBSETs (e.g. on different machines) to split
-# the download, then combine every part with merge.py once they're all done.
+# VPUs to process in this runtime.
+#   None = every VPU in EVENTS_CSV; else e.g. [ "01", "03N"],
 VPU_SUBSET = None
 
-# Appended to every per-VPU cache/output path (manifest, event_catchment_windows,
-# vpu_runs/<vpu><TAG_SUFFIX>/...) so multiple concurrent instances that both
-# touch the same VPU -- e.g. sharded runs, see run_sharded.sh -- never collide
-# on the same files. "" (default) reproduces the original single-instance
-# per-VPU naming. Non-empty also disables the end-of-run auto-merge (a shard
-# only ever has a fraction of any given VPU's events, so merging just its own
-# parts would silently produce an incomplete result mislabeled as final) --
-# merge all shards' parts together explicitly once every instance is done.
+# Appended to every per-VPU cache/output path so concurrent instances
+# touching the same VPU (e.g. sharded runs) don't collide.
+#   '' (default) -- reproduces the original single-instance naming.
+#   Else, disables end-of-run auto-merge.
 TAG_SUFFIX = ''
 
-CACHE_DIR = Path('/projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess/neuse')
-OUT_NC = Path('/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc')
+# Where to cache per-VPU windows, timesteps, and NetCDF shards. Base cache
+# root is centralized in config.yaml (see flash_preprocess.paths.CACHE_DIR).
+CACHE_DIR = _CACHE_DIR
 
+# Output NetCDF path for merged 15-min MRMS precipitation.
+OUT_NC = _CACHE_DIR / 'mrms_15min.nc'
+
+# Margin (degrees) added around each VPU's bbox before downloading.
 BBOX_MARGIN_DEG = 0.1
+
+# More workers == faster. Make sure you have enough CPUs (=workers) and RAM.
 MAX_WORKERS = 100
 
-# Total width of each event's forcing window, in days (e.g. 5 or 6) -- the
-# window is centered on CENTROID and extends WINDOW_DAYS/2 on each side.
+# Total width of each event's forcing window (days), centered on CENTROID.
+#    Must match WINDOW_DAYS used for the AORC run.
 WINDOW_DAYS = 6.0
 
-# 'midpoint' -- window centered on the mean of BEGIN_DATE_TIME/END_DATE_TIME.
-# 'peak' -- window centered on the event's peak_time column instead.
+# Event window centroid method.
+#   'midpoint' -- center between begin and end times.
+#   'peak' (Recommended) -- window centered on the event's reported peak time.
 CENTROID = 'peak'
 
-# True -> ignore cached per-VPU windows and downloaded MRMS timesteps, and
-# rebuild both from scratch for every VPU in this run. Does NOT touch the
-# hydrofabric or crosswalk caches (static geometry, independent of windowing
-# or event selection, expensive to rebuild). Needed after any change to
-# WINDOW_DAYS/CENTROID -- build_manifest() only caches by file existence, so
-# without this a rerun would silently keep reusing the old window boundaries.
+# Caching
+#   True -- ignore cached per-VPU windows/timesteps and rebuild from scratch.
+#   Doesn't touch the hydrofabric or crosswalk caches (static geometry,
+#   expensive to rebuild). Needed after any change to WINDOW_DAYS/CENTROID.
 FRESH_START = False
-# ---------------------------------------------------- #
+# -------------------------- #
 
 
 def parse_args():

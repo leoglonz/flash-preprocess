@@ -18,3 +18,5 @@ with open(_CONFIG_PATH) as f:
     _config = yaml.safe_load(f)
 
 HYDROFABRIC_GPKG = Path(_config['hydrofabric_gpkg'])
+EVENTS_CSV = Path(_config['events_csv'])
+CACHE_DIR = Path(_config['cache_dir'])

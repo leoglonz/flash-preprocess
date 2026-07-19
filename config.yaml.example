@@ -8,3 +8,9 @@
 # CONUS Nextgen hydrofabric geopackage, e.g. fetched via:
 #   aws s3 cp s3://communityhydrofabric/hydrofabrics/community/conus_nextgen.gpkg . --no-sign-request
 hydrofabric_gpkg: /projects/mhpi/leoglonz/sub_hourly/data/conus_nextgen.gpkg
+
+# Flash flood event registry path.
+events_csv: /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv
+
+# Cache directory for intermediate files (per-VPU windows, weights, shards).
+cache_dir: /projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess
