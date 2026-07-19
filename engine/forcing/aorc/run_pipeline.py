@@ -1,3 +1,16 @@
+"""Extract hourly AORC (Analysis Of Record for Calibration) forcing for a set
+of flash flood events.
+
+Outputs:
+    - 15-min resolution forcing NetCDF for all events (window centered on
+      each event's centroid or peak flow time)
+    - 1-hr resolution forcing NetCDF for all events (antecedent days
+      preceding the 15-min window)
+
+Edit the CONFIG block at the top of this file to set all options. Run with:
+    python engine/forcing/aorc/run_pipeline.py
+"""
+
 import shutil
 from pathlib import Path
 
@@ -5,11 +18,15 @@ import pandas as pd
 
 from flash_preprocess.mrms import load_hydrofabric, build_manifest
 from flash_preprocess.aorc import (
-    build_weighted_crosswalk, build_shards, extract_all, merge_hr_parts, merge_15min_parts,
+    build_weighted_crosswalk,
+    build_shards,
+    extract_all,
+    merge_hr_parts,
+    merge_15min_parts,
 )
 
 
-# CONFIG ------------------------------------------
+# CONFIG --------------------------------------------------------------------- #
 EVENTS_CSV = Path("/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv")
 EVENT_IDS = None  # None -> all events in EVENTS_CSV; else e.g. [1266, 4703]
 
@@ -27,7 +44,9 @@ VPU_SUBSET = None
 # instead of redoing the upstream-catchment BFS.
 CACHE_DIR = Path("/projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess/neuse")
 OUT_HR_NC = Path("/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_hr.nc")
-OUT_15MIN_NC = Path("/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_15min.nc")
+OUT_15MIN_NC = Path(
+    "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_15min.nc",
+)
 
 MAX_WORKERS = 16  # parallel workers for exactextract area-weight computation
 
@@ -47,10 +66,11 @@ ANTECEDENT_DAYS = 30.0
 # scratch for every VPU in this run. Does NOT touch the hydrofabric cache.
 # Needed after any change to WINDOW_DAYS/CENTROID/ANTECEDENT_DAYS.
 FRESH_START = False
-# ---------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 
 def main():
+    """Run the AORC forcing extraction pipeline."""
     catchments_master, *_ = load_hydrofabric(CACHE_DIR)
     print(f"hydrofabric: {len(catchments_master):,} catchments")
 
@@ -64,7 +84,9 @@ def main():
     if VPU_SUBSET is not None:
         vpus = [v for v in vpus if v in VPU_SUBSET]
     print(f"events: {len(events):,} across {len(vpus)} VPU(s): {vpus}")
-    print(f"window: {WINDOW_DAYS} day(s) centered on '{CENTROID}', {ANTECEDENT_DAYS}d antecedent")
+    print(
+        f"window: {WINDOW_DAYS} day(s) centered on '{CENTROID}', {ANTECEDENT_DAYS}d antecedent",
+    )
 
     # 15-min steps in a WINDOW_DAYS-wide window, + a small buffer for the
     # outward hour-grid rounding in build_manifest possibly adding a step.
@@ -84,22 +106,42 @@ def main():
             print(f"  FRESH_START: cleared weight cache and {vpu_dir}")
 
         manifest, event_catchment_windows = build_manifest(
-            vpu_events, CACHE_DIR, tag=vpu, window_days=WINDOW_DAYS, centroid=CENTROID)
+            vpu_events,
+            CACHE_DIR,
+            tag=vpu,
+            window_days=WINDOW_DAYS,
+            centroid=CENTROID,
+        )
         print(f"  manifest: {len(manifest):,} events resolved to upstream catchments")
 
-        divide_id_of = dict(zip(vpu_events["event_id"].astype(str), vpu_events["gage_cat-id"]))
+        divide_id_of = dict(
+            zip(vpu_events["event_id"].astype(str), vpu_events["gage_cat-id"]),
+        )
 
         divide_ids = event_catchment_windows["divide_id"].unique()
-        weight_idx = build_weighted_crosswalk(divide_ids, catchments_master, CACHE_DIR, tag=vpu,
-                                               max_workers=MAX_WORKERS)
+        weight_idx = build_weighted_crosswalk(
+            divide_ids,
+            catchments_master,
+            CACHE_DIR,
+            tag=vpu,
+            max_workers=MAX_WORKERS,
+        )
         print(f"  weighted crosswalk: {len(weight_idx['station_ids']):,} catchments")
 
         build_shards(manifest, weight_idx, vpu_dir, antecedent_days=ANTECEDENT_DAYS)
 
         hr_part = vpu_dir / "aorc_hr_part.nc"
         min15_part = vpu_dir / "aorc_15min_part.nc"
-        extract_all(manifest, weight_idx, vpu_dir / "shards", hr_part, min15_part, divide_id_of,
-                    antecedent_days=ANTECEDENT_DAYS, max_15min_steps=max_15min_steps)
+        extract_all(
+            manifest,
+            weight_idx,
+            vpu_dir / "shards",
+            hr_part,
+            min15_part,
+            divide_id_of,
+            antecedent_days=ANTECEDENT_DAYS,
+            max_15min_steps=max_15min_steps,
+        )
         hr_parts.append(hr_part)
         min15_parts.append(min15_part)
 

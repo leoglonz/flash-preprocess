@@ -1,13 +1,17 @@
 """
-Aggregate NOAA StormEvents Flash Flood observations, match each merged event to a downstream USGS gage, sample MRMS radar coverage, and save one final CSV.
+Aggregate NOAA StormEvents Flash Flood observations, match each merged event
+to a downstream USGS gage, sample MRMS radar coverage, and save one final CSV.
 
 Main features:
 - Processes one year or multiple years in one run.
-- Pulls NOAA StormEvents details files directly from the NOAA website without saving input files locally.
+- Pulls NOAA StormEvents details files directly from the NOAA website without
+  saving input files locally.
 - Prevents observations with different episode_id values from being merged.
-- Does not cap merged event duration; long events are retained and flagged in the main CSV.
-- Converts NOAA BEGIN_DATE_TIME and END_DATE_TIME to UTC
-- Adds storm/gage hydrofabric IDs, selected downstream STAID, storm-gage distance, and radar coverage.
+- Does not cap merged event duration; long events are retained and flagged in
+  the main CSV.
+- Converts NOAA BEGIN_DATE_TIME and END_DATE_TIME to UTC.
+- Adds storm/gage hydrofabric IDs, selected downstream STAID, storm-gage
+  distance, and radar coverage.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-from typing import Iterable
+from collections.abc import Iterable
 
 import geopandas as gpd
 import networkx as nx
@@ -24,6 +28,8 @@ import pandas as pd
 import rasterio
 import requests
 from tqdm.auto import tqdm
+
+from flash_preprocess.paths import HYDROFABRIC_GPKG
 
 
 # ==========================================================
@@ -48,8 +54,8 @@ BUFFER_KM = 0.0
 # This is the only CSV written by the script.
 OUTPUT_CSV = None
 
-# Hydrofabric and gage inputs for the USGS matching step.
-HYDROFABRIC_GPKG = "event_pipeline_inputs/conus_nextgen.gpkg"
+# Gage inputs for the USGS matching step. Hydrofabric path is centralized
+# in config.yaml (see flash_preprocess.paths.HYDROFABRIC_GPKG).
 GAGES_CSV = "event_pipeline_inputs/gages2_lt1000km2.csv"
 
 # Radar coverage raster used to filter/select the downstream gage.
@@ -75,6 +81,7 @@ EVENT_TYPE_TO_KEEP = "Flash Flood"
 # HELPERS
 # ==========================================================
 
+
 class UnionFind:
     """Small disjoint-set structure for joining observations into clusters."""
 
@@ -82,12 +89,14 @@ class UnionFind:
         self.parent = list(range(n))
 
     def find(self, x: int) -> int:
+        """Return the root of x's cluster, path-compressing along the way."""
         while self.parent[x] != x:
             self.parent[x] = self.parent[self.parent[x]]
             x = self.parent[x]
         return x
 
     def union(self, a: int, b: int) -> None:
+        """Merge the clusters containing a and b."""
         root_a = self.find(a)
         root_b = self.find(b)
         if root_a != root_b:
@@ -165,12 +174,12 @@ def load_stormevents(years: Iterable[int]) -> pd.DataFrame:
     print(f"Total StormEvents rows loaded: {len(storm):,}")
     return storm
 
+
 def require_columns(df: pd.DataFrame, required_columns: list[str]) -> None:
     """Stop early with a clear message if required NOAA columns are missing."""
     missing = [col for col in required_columns if col not in df.columns]
     if missing:
         raise KeyError("Missing required column(s): " + ", ".join(missing))
-
 
 
 def parse_noaa_datetimes(series: pd.Series) -> pd.Series:
@@ -216,6 +225,7 @@ def convert_noaa_time_columns_to_utc(df: pd.DataFrame) -> pd.DataFrame:
 # PREPROCESSING
 # ==========================================================
 
+
 def preprocess_flash_floods(storm: pd.DataFrame) -> pd.DataFrame:
     """Filter to usable Flash Flood observations and create clustering fields."""
     required = [
@@ -255,12 +265,12 @@ def preprocess_flash_floods(storm: pd.DataFrame) -> pd.DataFrame:
     flash["damage_property_usd"] = flash["DAMAGE_PROPERTY"].apply(parse_damage)
     flash["damage_crops_usd"] = flash["DAMAGE_CROPS"].apply(parse_damage)
 
-    flash["deaths_total"] = (
-        flash["DEATHS_DIRECT"].fillna(0) + flash["DEATHS_INDIRECT"].fillna(0)
-    )
-    flash["injuries_total"] = (
-        flash["INJURIES_DIRECT"].fillna(0) + flash["INJURIES_INDIRECT"].fillna(0)
-    )
+    flash["deaths_total"] = flash["DEATHS_DIRECT"].fillna(0) + flash[
+        "DEATHS_INDIRECT"
+    ].fillna(0)
+    flash["injuries_total"] = flash["INJURIES_DIRECT"].fillna(0) + flash[
+        "INJURIES_INDIRECT"
+    ].fillna(0)
 
     needed_for_geometry = [
         "EPISODE_ID",
@@ -280,13 +290,15 @@ def preprocess_flash_floods(storm: pd.DataFrame) -> pd.DataFrame:
     flash["clon"] = (flash["BEGIN_LON"] + flash["END_LON"]) / 2.0
 
     flash["radius_km"] = flash.apply(
-        lambda row: haversine_km(
-            row["BEGIN_LAT"],
-            row["BEGIN_LON"],
-            row["END_LAT"],
-            row["END_LON"],
-        )
-        / 2.0,
+        lambda row: (
+            haversine_km(
+                row["BEGIN_LAT"],
+                row["BEGIN_LON"],
+                row["END_LAT"],
+                row["END_LON"],
+            )
+            / 2.0
+        ),
         axis=1,
     )
 
@@ -296,6 +308,7 @@ def preprocess_flash_floods(storm: pd.DataFrame) -> pd.DataFrame:
 # ==========================================================
 # CLUSTERING
 # ==========================================================
+
 
 def reports_overlap(row_a, row_b, buffer_km: float) -> bool:
     """Return True when two report footprints overlap or touch with the buffer."""
@@ -328,7 +341,10 @@ def cluster_one_episode(
     start = 0
 
     for i in range(n):
-        while ordered.loc[i, "BEGIN_DATE_TIME"] - ordered.loc[start, "BEGIN_DATE_TIME"] > merge_window:
+        while (
+            ordered.loc[i, "BEGIN_DATE_TIME"] - ordered.loc[start, "BEGIN_DATE_TIME"]
+            > merge_window
+        ):
             start += 1
 
         row_i = ordered.loc[i]
@@ -377,6 +393,7 @@ def cluster_by_episode(
 # AGGREGATION
 # ==========================================================
 
+
 def aggregate_events(flash: pd.DataFrame) -> pd.DataFrame:
     """Collapse clustered observations into one output row per event."""
     records = []
@@ -385,7 +402,7 @@ def aggregate_events(flash: pd.DataFrame) -> pd.DataFrame:
         episode_ids = group["episode_id"].dropna().unique()
         if len(episode_ids) != 1:
             raise ValueError(
-                f"Cluster {cluster_id} contains multiple episode_id values: {episode_ids}"
+                f"Cluster {cluster_id} contains multiple episode_id values: {episode_ids}",
             )
 
         begin = group["BEGIN_DATE_TIME"].min()
@@ -412,8 +429,7 @@ def aggregate_events(flash: pd.DataFrame) -> pd.DataFrame:
         centroid_lon = group["clon"].mean()
 
         footprint_radius_km = max(
-            haversine_km(centroid_lat, centroid_lon, row.clat, row.clon)
-            + row.radius_km
+            haversine_km(centroid_lat, centroid_lon, row.clat, row.clon) + row.radius_km
             for row in group.itertuples()
         )
 
@@ -439,7 +455,9 @@ def aggregate_events(flash: pd.DataFrame) -> pd.DataFrame:
                 "centroid_lon": round(centroid_lon, 4),
                 "footprint_radius_km": round(footprint_radius_km, 2),
                 "n_states": group["STATE"].nunique(),
-                "states": ", ".join(sorted(group["STATE"].dropna().astype(str).unique())),
+                "states": ", ".join(
+                    sorted(group["STATE"].dropna().astype(str).unique()),
+                ),
                 "primary_state": group["STATE"].mode().iat[0]
                 if not group["STATE"].mode().empty
                 else None,
@@ -451,13 +469,13 @@ def aggregate_events(flash: pd.DataFrame) -> pd.DataFrame:
                 "damage_crops_usd": crop_damage,
                 "damage_total_usd": np.nansum([property_damage, crop_damage]),
                 "flood_causes": ", ".join(
-                    sorted(group["FLOOD_CAUSE"].dropna().astype(str).unique())
+                    sorted(group["FLOOD_CAUSE"].dropna().astype(str).unique()),
                 ),
                 "event_ids": ", ".join(group["EVENT_ID"].astype(str)),
                 "source_files": ", ".join(
-                    sorted(group["source_file"].dropna().astype(str).unique())
+                    sorted(group["source_file"].dropna().astype(str).unique()),
                 ),
-            }
+            },
         )
 
     events = pd.DataFrame(records)
@@ -470,11 +488,10 @@ def aggregate_events(flash: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
-
-
 # ==========================================================
 # HYDROFABRIC, USGS GAGES, AND RADAR COVERAGE
 # ==========================================================
+
 
 def read_hydrofabric(hydrofabric_gpkg: str):
     """Read only the hydrofabric layers/columns needed for storm-gage matching."""
@@ -528,7 +545,10 @@ def build_flowpath_graph(network: pd.DataFrame) -> nx.DiGraph:
         create_using=nx.DiGraph(),
     )
 
-    print(f"Hydrofabric graph: {graph.number_of_nodes():,} nodes, {graph.number_of_edges():,} edges")
+    print(
+        f"Hydrofabric graph: {graph.number_of_nodes():,} nodes, "
+        f"{graph.number_of_edges():,} edges",
+    )
     return graph
 
 
@@ -621,14 +641,12 @@ def select_closest_downstream_gage(
     gages_indexed: gpd.GeoDataFrame,
     graph: nx.DiGraph,
 ) -> pd.DataFrame:
-    """For each storm event, select the closest downstream gage, including the same flowpath."""
+    """For each storm event, select the closest downstream gage (same flowpath included)."""
     valid_events = events_with_storm_ids[
         events_with_storm_ids["storm_flowpath-id"].notna()
     ].copy()
 
-    gage_lookup = gages_indexed[
-        gages_indexed["gage_flowpath-id"].notna()
-    ].copy()
+    gage_lookup = gages_indexed[gages_indexed["gage_flowpath-id"].notna()].copy()
 
     records = []
     print("Selecting closest downstream gage for each storm event")
@@ -653,16 +671,23 @@ def select_closest_downstream_gage(
         # Compute straight-line distance from the storm centroid to each
         # candidate downstream gage in meters. This is a Euclidean distance
         # in EPSG:5070 and is separate from the network downstream relation.
-        storm_point_5070 = gpd.GeoSeries(
-            gpd.points_from_xy([event_dict["centroid_lon"]], [event_dict["centroid_lat"]]),
-            crs="EPSG:4326",
-        ).to_crs("EPSG:5070").iloc[0]
+        storm_point_5070 = (
+            gpd.GeoSeries(
+                gpd.points_from_xy(
+                    [event_dict["centroid_lon"]],
+                    [event_dict["centroid_lat"]],
+                ),
+                crs="EPSG:4326",
+            )
+            .to_crs("EPSG:5070")
+            .iloc[0]
+        )
 
         downstream_gages_5070 = downstream_gages.to_crs("EPSG:5070")
         downstream_gages = downstream_gages.copy()
-        downstream_gages["storm_gage_dist_m"] = (
-            downstream_gages_5070.geometry.distance(storm_point_5070).astype(float)
-        )
+        downstream_gages["storm_gage_dist_m"] = downstream_gages_5070.geometry.distance(
+            storm_point_5070,
+        ).astype(float)
 
         closest = downstream_gages.sort_values("storm_gage_dist_m").iloc[0]
 
@@ -677,16 +702,21 @@ def select_closest_downstream_gage(
                 "gage_flowpath-id": closest.get("gage_flowpath-id"),
                 "gage_snap_dist_m": closest.get("gage_snap_dist_m"),
                 "storm_gage_dist_m": closest.get("storm_gage_dist_m"),
-            }
+            },
         )
         records.append(record)
 
     out = pd.DataFrame(records)
-    print(f"Events with a downstream gage: {len(out):,} / {len(events_with_storm_ids):,}")
+    print(
+        f"Events with a downstream gage: {len(out):,} / {len(events_with_storm_ids):,}",
+    )
     return out
 
 
-def add_radar_coverage(event_gage_rows: pd.DataFrame, radar_raster: str) -> pd.DataFrame:
+def add_radar_coverage(
+    event_gage_rows: pd.DataFrame,
+    radar_raster: str,
+) -> pd.DataFrame:
     """Sample radar coverage at the selected gage location."""
     path = Path(radar_raster)
     if not path.exists():
@@ -699,7 +729,10 @@ def add_radar_coverage(event_gage_rows: pd.DataFrame, radar_raster: str) -> pd.D
     print(f"Sampling radar coverage at gage locations: {path}")
     gage_points = gpd.GeoDataFrame(
         event_gage_rows.copy(),
-        geometry=gpd.points_from_xy(event_gage_rows["gage_lon"], event_gage_rows["gage_lat"]),
+        geometry=gpd.points_from_xy(
+            event_gage_rows["gage_lon"],
+            event_gage_rows["gage_lat"],
+        ),
         crs="EPSG:4326",
     )
 
@@ -719,10 +752,11 @@ def add_radar_coverage(event_gage_rows: pd.DataFrame, radar_raster: str) -> pd.D
 
 def attach_usgs_and_radar(events: pd.DataFrame) -> pd.DataFrame:
     """
-    Add storm/gage hydrofabric IDs, selected downstream STAID, storm-gage distance, and radar coverage.
+    Add storm/gage hydrofabric IDs, selected downstream STAID, storm-gage
+    distance, and radar coverage.
 
-    The original columns from the NOAA merge output are left unchanged. New columns
-    are appended to the final table.
+    The original columns from the NOAA merge output are left unchanged. New
+    columns are appended to the final table.
     """
     network, divides, flowpaths = read_hydrofabric(HYDROFABRIC_GPKG)
     graph = build_flowpath_graph(network)
@@ -745,7 +779,7 @@ def attach_usgs_and_radar(events: pd.DataFrame) -> pd.DataFrame:
         ].copy()
         print(
             f"Events retained after radar coverage >= {RADAR_COVERAGE_THRESHOLD:g}%: "
-            f"{len(event_gage_rows):,} / {before:,}"
+            f"{len(event_gage_rows):,} / {before:,}",
         )
 
     if "STATID" in event_gage_rows.columns:
@@ -756,6 +790,7 @@ def attach_usgs_and_radar(events: pd.DataFrame) -> pd.DataFrame:
         print(f"Rows with missing storm_gage_dist_m: {missing_distance:,}")
 
     return event_gage_rows.reset_index(drop=True)
+
 
 def choose_output_path(years: list[int]) -> Path:
     """Use the configured output path or generate one from the year range."""
@@ -772,7 +807,9 @@ def choose_output_path(years: list[int]) -> Path:
 # MAIN RUN
 # ==========================================================
 
+
 def main() -> None:
+    """Run the flash flood event aggregation pipeline."""
     years = list(range(START_YEAR, END_YEAR + 1))
 
     print("Starting Flash Flood event aggregation")
@@ -794,7 +831,7 @@ def main() -> None:
 
     print(
         f"{len(flash):,} usable reports merged into "
-        f"{flash['cluster'].nunique():,} episode-safe events"
+        f"{flash['cluster'].nunique():,} episode-safe events",
     )
 
     events = aggregate_events(flash)
@@ -803,7 +840,9 @@ def main() -> None:
     output_path = choose_output_path(years)
     final_rows.to_csv(output_path, index=False)
 
-    multi_report_events = int((events["n_reports"] > 1).sum()) if not events.empty else 0
+    multi_report_events = (
+        int((events["n_reports"] > 1).sum()) if not events.empty else 0
+    )
     largest_event = int(events["n_reports"].max()) if not events.empty else 0
     long_events = int(events["duration_gt_48h"].sum()) if not events.empty else 0
 

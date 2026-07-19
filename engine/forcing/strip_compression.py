@@ -22,6 +22,7 @@ import xarray as xr
 
 
 def main() -> None:
+    """Rewrite an event-indexed forcing NetCDF without zlib compression."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -54,7 +55,9 @@ def main() -> None:
 
     in_size = args.input.stat().st_size / 1e9
     out_size = args.output.stat().st_size / 1e9
-    print(f'\n{args.input.name}: {in_size:.2f} GB -> {args.output.name}: {out_size:.2f} GB')
+    print(
+        f'\n{args.input.name}: {in_size:.2f} GB -> {args.output.name}: {out_size:.2f} GB',
+    )
 
 
 if __name__ == '__main__':

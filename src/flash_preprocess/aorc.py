@@ -17,7 +17,6 @@ import netCDF4
 import numpy as np
 import pandas as pd
 import s3fs
-import time
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from scipy.sparse import csr_matrix
@@ -200,7 +199,7 @@ def disaggregate_to_15min(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Disaggregate hourly catchment data to 15-minute intervals.
 
-    Accumulated variables (APCP_surface): uniform split ÷ 4.
+    Accumulated variables (APCP_surface): uniform split / 4.
     Instantaneous variables: linear interpolation between hourly values.
 
     Parameters
@@ -238,7 +237,8 @@ def disaggregate_to_15min(
 
 def _atomic_write(write_fn, path):
     """write_fn(tmp_path) then atomic rename -- avoids a torn file if a
-    run is interrupted or a concurrent VPU job races on the same cache entry."""
+    run is interrupted or a concurrent VPU job races on the same cache entry.
+    """
     tmp = f"{path}.tmp{os.getpid()}"
     write_fn(tmp)
     os.replace(tmp, path)
@@ -259,20 +259,27 @@ AORC_LAT0 = 20.0  # southernmost latitude
 AORC_LON0 = -130.0  # westernmost longitude
 AORC_DLAT = 1.0 / 120.0  # ~0.008333 deg (~1 km)
 
-_WEIGHT_PARALLEL_THRESHOLD = 500  # below this, a single exact_extract call beats worker-spawn overhead
+_WEIGHT_PARALLEL_THRESHOLD = (
+    500  # below this, a single exact_extract call beats worker-spawn overhead
+)
 
 
 def build_aorc_grid() -> xr.Dataset:
     """AORC 1km grid geometry, identical every year (1979-2025). Latitude
     descending (row 0 = ~55N) to match the flat cell_id convention used
-    throughout this module (cell_id = row * AORC_NCOLS + col)."""
+    throughout this module (cell_id = row * AORC_NCOLS + col).
+    """
     lat = np.linspace(AORC_LAT0 + (AORC_NROWS - 1) * AORC_DLAT, AORC_LAT0, AORC_NROWS)
     lon = np.linspace(AORC_LON0, AORC_LON0 + (AORC_NCOLS - 1) * AORC_DLAT, AORC_NCOLS)
     dummy = np.zeros((AORC_NROWS, AORC_NCOLS), dtype=np.float32)
     return xr.Dataset({"dummy": (["y", "x"], dummy)}, coords={"y": lat, "x": lon})
 
 
-def _compute_weights(gdf_4326: gpd.GeoDataFrame, grid_ds: xr.Dataset, max_workers: int | None = None) -> pd.DataFrame:
+def _compute_weights(
+    gdf_4326: gpd.GeoDataFrame,
+    grid_ds: xr.Dataset,
+    max_workers: int | None = None,
+) -> pd.DataFrame:
     wkt = gdf_4326.crs.to_wkt()
     if len(gdf_4326) < _WEIGHT_PARALLEL_THRESHOLD:
         return get_cell_weights(grid_ds, gdf_4326, wkt)
@@ -286,10 +293,16 @@ def _compute_weights(gdf_4326: gpd.GeoDataFrame, grid_ds: xr.Dataset, max_worker
     return pd.concat(results)
 
 
-def build_weighted_crosswalk(divide_ids, catchments_master: gpd.GeoDataFrame, cache_dir: Path,
-                              tag: str = "", max_workers: int | None = None) -> dict:
+def build_weighted_crosswalk(
+    divide_ids,
+    catchments_master: gpd.GeoDataFrame,
+    cache_dir: Path,
+    tag: str = "",
+    max_workers: int | None = None,
+) -> dict:
     """Area-weighted AORC-pixel <-> catchment crosswalk for `divide_ids`, cached
-    per tag (VPU). Returns dict(station_ids, cell_ids_list, weights_list)."""
+    per tag (VPU). Returns dict(station_ids, cell_ids_list, weights_list).
+    """
     cache_dir = Path(cache_dir)
     suffix = f"_{tag}" if tag else ""
     f = cache_dir / f"aorc_weights{suffix}.pkl"
@@ -299,7 +312,9 @@ def build_weighted_crosswalk(divide_ids, catchments_master: gpd.GeoDataFrame, ca
         if divide_ids <= set(idx["station_ids"]):
             return idx
 
-    gdf = catchments_master[catchments_master["divide_id"].isin(divide_ids)][["divide_id", "geometry"]].to_crs(4326)
+    gdf = catchments_master[catchments_master["divide_id"].isin(divide_ids)][
+        ["divide_id", "geometry"]
+    ].to_crs(4326)
     weights_df = _compute_weights(gdf, build_aorc_grid(), max_workers)
 
     station_ids, cell_ids_list, weights_list = [], [], []
@@ -312,7 +327,11 @@ def build_weighted_crosswalk(divide_ids, catchments_master: gpd.GeoDataFrame, ca
         w = np.asarray(row["coverage"], dtype=np.float32)
         weights_list.append(w / w.sum())
 
-    idx = {"station_ids": np.array(station_ids), "cell_ids_list": cell_ids_list, "weights_list": weights_list}
+    idx = {
+        "station_ids": np.array(station_ids),
+        "cell_ids_list": cell_ids_list,
+        "weights_list": weights_list,
+    }
     cache_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write(lambda p: Path(p).write_bytes(pickle.dumps(idx)), f)
     return idx
@@ -320,9 +339,11 @@ def build_weighted_crosswalk(divide_ids, catchments_master: gpd.GeoDataFrame, ca
 
 # ── checkpointed per-year S3 fetch ──────────────────────────────────────────
 
+
 def _year_bounds(manifest: pd.DataFrame, antecedent_days: float) -> dict:
     """Per calendar year spanned by any event's [antecedent_start, win_end],
-    the tightest [lo, hi] bound covering every event's need that year."""
+    the tightest [lo, hi] bound covering every event's need that year.
+    """
     bounds = {}
     for row in manifest.itertuples():
         ant_start = row.win_start - pd.Timedelta(days=antecedent_days)
@@ -336,13 +357,19 @@ def _year_bounds(manifest: pd.DataFrame, antecedent_days: float) -> dict:
     return bounds
 
 
-def build_shards(manifest: pd.DataFrame, weight_idx: dict, vpu_dir: Path,
-                  variables=VARIABLE_LIST, antecedent_days: float = ANTECEDENT_DAYS,
-                  verbose: bool = True) -> list:
+def build_shards(
+    manifest: pd.DataFrame,
+    weight_idx: dict,
+    vpu_dir: Path,
+    variables=VARIABLE_LIST,
+    antecedent_days: float = ANTECEDENT_DAYS,
+    verbose: bool = True,
+) -> list:
     """Fetch + cache AORC data for every year spanned by `manifest`'s
     antecedent + event windows, one NetCDF shard per calendar year under
     <vpu_dir>/shards/. Resumable: an interrupted run leaves finished years'
-    shard files in place and a rerun only re-fetches missing years."""
+    shard files in place and a rerun only re-fetches missing years.
+    """
     shard_dir = Path(vpu_dir) / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
 
@@ -354,7 +381,9 @@ def build_shards(manifest: pd.DataFrame, weight_idx: dict, vpu_dir: Path,
         if f.exists():
             continue
         if verbose:
-            print(f"  fetching AORC {year}: {lo} -> {hi} ({len(all_cell_ids):,} pixels)")
+            print(
+                f"  fetching AORC {year}: {lo} -> {hi} ({len(all_cell_ids):,} pixels)",
+            )
         ds = open_aorc(np.datetime64(lo, "h"), np.datetime64(hi, "h"))
         ds = spatial_subset_points(ds, all_cell_ids)[list(variables)]
         with ProgressBar():
@@ -366,12 +395,24 @@ def build_shards(manifest: pd.DataFrame, weight_idx: dict, vpu_dir: Path,
             nc.createDimension("pixel", len(all_cell_ids))
             v_t = nc.createVariable("time", "i8", ("time",))
             v_t.units = "minutes since 1970-01-01 00:00:00 UTC"
-            v_t[:] = (ds_computed["time"].values.astype("datetime64[m]") - _EPOCH).astype(np.int64)
+            v_t[:] = (
+                ds_computed["time"].values.astype("datetime64[m]") - _EPOCH
+            ).astype(np.int64)
             nc.createVariable("pixel_id", "i8", ("pixel",))[:] = all_cell_ids
-            nc.createVariable("latitude", "f4", ("pixel",))[:] = ds_computed["latitude"].values.astype(np.float32)
-            nc.createVariable("longitude", "f4", ("pixel",))[:] = ds_computed["longitude"].values.astype(np.float32)
+            nc.createVariable("latitude", "f4", ("pixel",))[:] = ds_computed[
+                "latitude"
+            ].values.astype(np.float32)
+            nc.createVariable("longitude", "f4", ("pixel",))[:] = ds_computed[
+                "longitude"
+            ].values.astype(np.float32)
             for var in variables:
-                nv = nc.createVariable(var, "f4", ("time", "pixel"), zlib=True, complevel=1)
+                nv = nc.createVariable(
+                    var,
+                    "f4",
+                    ("time", "pixel"),
+                    zlib=True,
+                    complevel=1,
+                )
                 nv[:] = ds_computed[var].values.astype(np.float32)
             nc.close()
 
@@ -380,17 +421,31 @@ def build_shards(manifest: pd.DataFrame, weight_idx: dict, vpu_dir: Path,
 
 
 def open_shards(shard_dir: Path) -> xr.Dataset:
+    """Open all AORC shards in shard_dir as one lazily-concatenated dataset."""
     files = sorted(Path(shard_dir).glob("aorc_*.nc"))
     if not files:
         raise FileNotFoundError(f"no AORC shards in {shard_dir}")
-    return xr.open_mfdataset([str(f) for f in files], combine="nested", concat_dim="time",
-                              engine="netcdf4", data_vars="minimal", coords="minimal",
-                              compat="override").sortby("time")
+    return xr.open_mfdataset(
+        [str(f) for f in files],
+        combine="nested",
+        concat_dim="time",
+        engine="netcdf4",
+        data_vars="minimal",
+        coords="minimal",
+        compat="override",
+    ).sortby("time")
 
 
 # ── per-event extraction: antecedent hourly window + 5-day 15-min window ───
 
-def _create_output_nc(path: Path, n_events: int, max_steps: int, meta: dict, data_vars: dict) -> netCDF4.Dataset:
+
+def _create_output_nc(
+    path: Path,
+    n_events: int,
+    max_steps: int,
+    meta: dict,
+    data_vars: dict,
+) -> netCDF4.Dataset:
     n_basins = meta["n_basins"]
     nc = netCDF4.Dataset(path, "w", format="NETCDF4")
     nc.createDimension("event", n_events)
@@ -399,32 +454,52 @@ def _create_output_nc(path: Path, n_events: int, max_steps: int, meta: dict, dat
 
     nc.createVariable("event_id", str, ("event",))
     nc.createVariable("n_steps", "i4", ("event",))
-    v = nc.createVariable("ts_start", "f8", ("event",)); v.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v = nc.createVariable("ts_end", "f8", ("event",)); v.units = "minutes since 1970-01-01 00:00:00 UTC"
+    v = nc.createVariable("ts_start", "f8", ("event",))
+    v.units = "minutes since 1970-01-01 00:00:00 UTC"
+    v = nc.createVariable("ts_end", "f8", ("event",))
+    v.units = "minutes since 1970-01-01 00:00:00 UTC"
     nc.createVariable("event_gage_id", str, ("event",))
     nc.createVariable("event_divide_id", str, ("event",))
 
-    v = nc.createVariable("divide_id", str, ("catchment",)); v[:] = np.array(meta["station_ids"], dtype=object)
-    v = nc.createVariable("latitude", "f4", ("catchment",)); v[:] = meta["cat_lats"]
-    v = nc.createVariable("longitude", "f4", ("catchment",)); v[:] = meta["cat_lons"]
+    v = nc.createVariable("divide_id", str, ("catchment",))
+    v[:] = np.array(meta["station_ids"], dtype=object)
+    v = nc.createVariable("latitude", "f4", ("catchment",))
+    v[:] = meta["cat_lats"]
+    v = nc.createVariable("longitude", "f4", ("catchment",))
+    v[:] = meta["cat_lons"]
 
     chunk_e, chunk_c = min(n_events, 16), min(n_basins, 64)
     for vname, (units, long_name) in data_vars.items():
-        nv = nc.createVariable(vname, "f4", ("event", "time_step", "catchment"), fill_value=np.nan,
-                                zlib=True, complevel=4, chunksizes=(chunk_e, max_steps, chunk_c))
+        nv = nc.createVariable(
+            vname,
+            "f4",
+            ("event", "time_step", "catchment"),
+            fill_value=np.nan,
+            zlib=True,
+            complevel=4,
+            chunksizes=(chunk_e, max_steps, chunk_c),
+        )
         nv.units, nv.long_name = units, long_name
     return nc
 
 
 def _catchment_metadata(ds: xr.Dataset, weight_idx: dict):
     """Localize global pixel_ids to ds's pixel-dim ordering, build the sparse
-    weight matrix, and compute area-weighted catchment centroids."""
+    weight matrix, and compute area-weighted catchment centroids.
+    """
     pixel_id = ds["pixel_id"].values
     id_to_local = {v: i for i, v in enumerate(pixel_id)}
-    local_cids_list = [np.array([id_to_local[c] for c in cids], dtype=np.int64)
-                        for cids in weight_idx["cell_ids_list"]]
+    local_cids_list = [
+        np.array([id_to_local[c] for c in cids], dtype=np.int64)
+        for cids in weight_idx["cell_ids_list"]
+    ]
     n_basins, n_pixels = len(weight_idx["station_ids"]), ds.sizes["pixel"]
-    W = build_weight_matrix(local_cids_list, weight_idx["weights_list"], n_basins, n_pixels)
+    W = build_weight_matrix(
+        local_cids_list,
+        weight_idx["weights_list"],
+        n_basins,
+        n_pixels,
+    )
 
     lat_px = ds["latitude"].values.astype(np.float32)
     lon_px = ds["longitude"].values.astype(np.float32)
@@ -438,15 +513,27 @@ def _catchment_metadata(ds: xr.Dataset, weight_idx: dict):
 
 def _catchment_pet(vd: dict) -> np.ndarray:
     return penman_monteith_pet(
-        temp=vd["TMP_2maboveground"], spfh=vd["SPFH_2maboveground"], dlwrf=vd["DLWRF_surface"],
-        dswrf=vd["DSWRF_surface"], pres=vd["PRES_surface"],
-        ugrd_10m=vd["UGRD_10maboveground"], vgrd_10m=vd["VGRD_10maboveground"],
+        temp=vd["TMP_2maboveground"],
+        spfh=vd["SPFH_2maboveground"],
+        dlwrf=vd["DLWRF_surface"],
+        dswrf=vd["DSWRF_surface"],
+        pres=vd["PRES_surface"],
+        ugrd_10m=vd["UGRD_10maboveground"],
+        vgrd_10m=vd["VGRD_10maboveground"],
     )
 
 
-def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
-                 out_hr_nc: Path, out_15min_nc: Path, divide_id_of: dict,
-                 antecedent_days: float = ANTECEDENT_DAYS, max_15min_steps: int = 481):
+def extract_all(
+    manifest: pd.DataFrame,
+    weight_idx: dict,
+    shard_dir: Path,
+    out_hr_nc: Path,
+    out_15min_nc: Path,
+    divide_id_of: dict,
+    antecedent_days: float = ANTECEDENT_DAYS,
+    max_15min_steps: int = 481,
+):
+    """Extract per-event hourly and 15-min AORC forcing to out_hr_nc/out_15min_nc."""
     # Eager-load once: shards are netCDF4-backed dask arrays, so repeated
     # per-event/per-variable .isel().values calls below would otherwise
     # re-hit disk for every slice instead of just indexing an in-memory array.
@@ -455,7 +542,12 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
     W, cat_lats, cat_lons = _catchment_metadata(ds, weight_idx)
     n_basins = len(weight_idx["station_ids"])
     n_hours_ant = int(antecedent_days * 24)
-    meta = dict(n_basins=n_basins, station_ids=weight_idx["station_ids"], cat_lats=cat_lats, cat_lons=cat_lons)
+    meta = {
+        "n_basins": n_basins,
+        "station_ids": weight_idx["station_ids"],
+        "cat_lats": cat_lats,
+        "cat_lons": cat_lons,
+    }
 
     n_events = len(manifest)
 
@@ -481,7 +573,9 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
     ts_end_15 = np.zeros(n_events, dtype=np.float64)
 
     skipped = []
-    for i, row in enumerate(tqdm(manifest.itertuples(), total=n_events, desc="extract")):
+    for i, row in enumerate(
+        tqdm(manifest.itertuples(), total=n_events, desc="extract"),
+    ):
         sid = str(row.storm_index)
         event_ids[i] = sid
         gage_ids[i] = row.recording_gage_STAID
@@ -491,9 +585,14 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
         ant_mask = (time_dt >= ant_start) & (time_dt < row.win_start)
         evt_mask = (time_dt >= row.win_start) & (time_dt <= row.win_end)
         if ant_mask.sum() < n_hours_ant or not evt_mask.any():
-            skipped.append({"storm_id": sid, "gauge_id": row.recording_gage_STAID,
-                             "reason": f"incomplete shard coverage (ant={int(ant_mask.sum())}/{n_hours_ant}, "
-                                       f"evt={int(evt_mask.sum())})"})
+            skipped.append(
+                {
+                    "storm_id": sid,
+                    "gauge_id": row.recording_gage_STAID,
+                    "reason": f"incomplete shard coverage (ant={int(ant_mask.sum())}/{n_hours_ant}, "
+                    f"evt={int(evt_mask.sum())})",
+                },
+            )
             continue
 
         raw_ant = {v: ds[v].isel(time=ant_mask).values for v in VARIABLE_LIST}
@@ -526,11 +625,17 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
 
     ds.close()
 
-    nc_hr = _create_output_nc(out_hr_nc, n_events, n_hours_ant, meta, {
-        "P": ("kg m-2", "Precipitation"),
-        "T": ("degC", "Air temperature at 2 m"),
-        "PET": ("mm h-1", "Penman-Monteith ET0 (FAO-56 hourly)"),
-    })
+    nc_hr = _create_output_nc(
+        out_hr_nc,
+        n_events,
+        n_hours_ant,
+        meta,
+        {
+            "P": ("kg m-2", "Precipitation"),
+            "T": ("degC", "Air temperature at 2 m"),
+            "PET": ("mm h-1", "Penman-Monteith ET0 (FAO-56 hourly)"),
+        },
+    )
     nc_hr.variables["event_id"][:] = event_ids
     nc_hr.variables["n_steps"][:] = n_steps_hr
     nc_hr.variables["ts_start"][:] = ts_start_hr
@@ -542,10 +647,16 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
     nc_hr.variables["PET"][:] = PET_ant
     nc_hr.close()
 
-    nc_15 = _create_output_nc(out_15min_nc, n_events, max_15min_steps, meta, {
-        "T": ("degC", "Air temperature at 2 m (interpolated)"),
-        "PET": ("mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"),
-    })
+    nc_15 = _create_output_nc(
+        out_15min_nc,
+        n_events,
+        max_15min_steps,
+        meta,
+        {
+            "T": ("degC", "Air temperature at 2 m (interpolated)"),
+            "PET": ("mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"),
+        },
+    )
     nc_15.variables["event_id"][:] = event_ids
     nc_15.variables["n_steps"][:] = n_steps_15
     nc_15.variables["ts_start"][:] = ts_start_15
@@ -557,17 +668,27 @@ def extract_all(manifest: pd.DataFrame, weight_idx: dict, shard_dir: Path,
     nc_15.close()
 
     if skipped:
-        pd.DataFrame(skipped).to_csv(Path(out_hr_nc).with_name("extraction_skipped_events.csv"), index=False)
-        print(f"WARNING: {len(skipped)} / {n_events} events skipped (incomplete shard coverage) -- "
-              f"logged to extraction_skipped_events.csv")
-    print(f"wrote {out_hr_nc.name} and {out_15min_nc.name}: {n_events - len(skipped)} events x {n_basins} catchments")
+        pd.DataFrame(skipped).to_csv(
+            Path(out_hr_nc).with_name("extraction_skipped_events.csv"),
+            index=False,
+        )
+        print(
+            f"WARNING: {len(skipped)} / {n_events} events skipped (incomplete shard coverage) -- "
+            f"logged to extraction_skipped_events.csv",
+        )
+    print(
+        f"wrote {out_hr_nc.name} and {out_15min_nc.name}: {n_events - len(skipped)} events x {n_basins} catchments",
+    )
 
 
 # ── merge per-VPU part files into one combined NetCDF ───────────────────────
 
+
 def _merge_event_parts(part_paths, out_nc, data_vars: dict):
     parts = [xr.open_dataset(p, decode_times=False) for p in part_paths]
-    all_cats = sorted(set().union(*[set(p["divide_id"].values.tolist()) for p in parts]))
+    all_cats = sorted(
+        set().union(*[set(p["divide_id"].values.tolist()) for p in parts]),
+    )
     cat_idx = {c: j for j, c in enumerate(all_cats)}
     max_steps = max(p.sizes["time_step"] for p in parts)
     n_ev, n_cat = sum(p.sizes["event"] for p in parts), len(all_cats)
@@ -585,7 +706,10 @@ def _merge_event_parts(part_paths, out_nc, data_vars: dict):
     n_steps = np.zeros(n_ev, dtype=np.int32)
     ts_start = np.zeros(n_ev, dtype=np.float64)
     ts_end = np.zeros(n_ev, dtype=np.float64)
-    arrays = {name: np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32) for name in data_vars}
+    arrays = {
+        name: np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32)
+        for name in data_vars
+    }
 
     i = 0
     for p in parts:
@@ -593,14 +717,14 @@ def _merge_event_parts(part_paths, out_nc, data_vars: dict):
         lat_out[cols] = p["latitude"].values
         lon_out[cols] = p["longitude"].values
         n, ns = p.sizes["event"], p.sizes["time_step"]
-        event_ids[i:i + n] = p["event_id"].values
-        gage_ids[i:i + n] = p["event_gage_id"].values
-        divide_ids_out[i:i + n] = p["event_divide_id"].values
-        n_steps[i:i + n] = p["n_steps"].values
-        ts_start[i:i + n] = p["ts_start"].values
-        ts_end[i:i + n] = p["ts_end"].values
+        event_ids[i : i + n] = p["event_id"].values
+        gage_ids[i : i + n] = p["event_gage_id"].values
+        divide_ids_out[i : i + n] = p["event_divide_id"].values
+        n_steps[i : i + n] = p["n_steps"].values
+        ts_start[i : i + n] = p["ts_start"].values
+        ts_end[i : i + n] = p["ts_end"].values
         for name in data_vars:
-            arrays[name][i:i + n, :ns, cols] = p[name].values
+            arrays[name][i : i + n, :ns, cols] = p[name].values
         i += n
         p.close()
 
@@ -612,36 +736,60 @@ def _merge_event_parts(part_paths, out_nc, data_vars: dict):
 
     nc.createVariable("event_id", str, ("event",))[:] = event_ids
     nc.createVariable("n_steps", "i4", ("event",))[:] = n_steps
-    v_ts = nc.createVariable("ts_start", "f8", ("event",)); v_ts.units = "minutes since 1970-01-01 00:00:00 UTC"
+    v_ts = nc.createVariable("ts_start", "f8", ("event",))
+    v_ts.units = "minutes since 1970-01-01 00:00:00 UTC"
     v_ts[:] = ts_start
-    v_te = nc.createVariable("ts_end", "f8", ("event",)); v_te.units = "minutes since 1970-01-01 00:00:00 UTC"
+    v_te = nc.createVariable("ts_end", "f8", ("event",))
+    v_te.units = "minutes since 1970-01-01 00:00:00 UTC"
     v_te[:] = ts_end
     nc.createVariable("event_gage_id", str, ("event",))[:] = gage_ids
     nc.createVariable("event_divide_id", str, ("event",))[:] = divide_ids_out
-    nc.createVariable("divide_id", str, ("catchment",))[:] = np.array(all_cats, dtype=object)
+    nc.createVariable("divide_id", str, ("catchment",))[:] = np.array(
+        all_cats,
+        dtype=object,
+    )
     nc.createVariable("latitude", "f4", ("catchment",))[:] = lat_out
     nc.createVariable("longitude", "f4", ("catchment",))[:] = lon_out
 
     for name, (units, long_name) in data_vars.items():
-        nv = nc.createVariable(name, "f4", ("event", "time_step", "catchment"), fill_value=np.nan,
-                                zlib=True, complevel=4, chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)))
+        nv = nc.createVariable(
+            name,
+            "f4",
+            ("event", "time_step", "catchment"),
+            fill_value=np.nan,
+            zlib=True,
+            complevel=4,
+            chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)),
+        )
         nv.units, nv.long_name = units, long_name
         nv[:] = arrays[name]
 
     nc.close()
-    print(f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events x {n_cat} catchments")
+    print(
+        f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events x {n_cat} catchments",
+    )
 
 
 def merge_hr_parts(part_paths, out_nc):
-    _merge_event_parts(part_paths, out_nc, {
-        "P": ("kg m-2", "Precipitation"),
-        "T": ("degC", "Air temperature at 2 m"),
-        "PET": ("mm h-1", "Penman-Monteith ET0 (FAO-56 hourly)"),
-    })
+    """Merge per-VPU hourly AORC part files into out_nc."""
+    _merge_event_parts(
+        part_paths,
+        out_nc,
+        {
+            "P": ("kg m-2", "Precipitation"),
+            "T": ("degC", "Air temperature at 2 m"),
+            "PET": ("mm h-1", "Penman-Monteith ET0 (FAO-56 hourly)"),
+        },
+    )
 
 
 def merge_15min_parts(part_paths, out_nc):
-    _merge_event_parts(part_paths, out_nc, {
-        "T": ("degC", "Air temperature at 2 m (interpolated)"),
-        "PET": ("mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"),
-    })
+    """Merge per-VPU 15-min AORC part files into out_nc."""
+    _merge_event_parts(
+        part_paths,
+        out_nc,
+        {
+            "T": ("degC", "Air temperature at 2 m (interpolated)"),
+            "PET": ("mm 15min-1", "Penman-Monteith ET0 (15-min, uniform split)"),
+        },
+    )

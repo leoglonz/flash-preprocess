@@ -1,14 +1,15 @@
 import sqlite3
 from collections import deque
 
+import geopandas as gpd
 import pandas as pd
 import xarray as xr
-import geopandas as gpd
 from exactextract import exact_extract
 from exactextract.raster import NumPyRasterSource
 
+from flash_preprocess.paths import HYDROFABRIC_GPKG
 
-HF_PATH_DEFAULT = '/Users/leoglonz/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg'
+HF_PATH_DEFAULT = str(HYDROFABRIC_GPKG)
 
 
 def build_upstream_graph(hf_path: str) -> dict[str, list[str]]:
@@ -85,19 +86,19 @@ def get_cell_weights(
 
     Parameters
     ----------
-    raster : xr.Dataset
+    raster
         One timestep of a gridded forcings dataset.
-    gdf : gpd.GeoDataFrame
+    gdf
         A GeoDataFrame with a polygon feature.
-    wkt : str
+    wkt
         Well-known text (WKT) representation of gdf's coordinate reference
-        system (CRS)
+        system (CRS).
 
     Returns
     -------
     pd.DataFrame
-        DataFrame indexed by divide_id that contains information about coverage
-        for each raster cell in gridded forcing file.
+        DataFrame indexed by divide_id with coverage info for each raster
+        cell in the gridded forcing file.
     """
     xmin = min(raster.x)
     xmax = max(raster.x)

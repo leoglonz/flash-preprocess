@@ -5,8 +5,13 @@ from pathlib import Path
 import pandas as pd
 
 from flash_preprocess.mrms import (
-    load_hydrofabric, build_crosswalk, build_manifest, build_fractional_crosswalk,
-    build_store, extract_all, merge_parts,
+    load_hydrofabric,
+    build_crosswalk,
+    build_manifest,
+    build_fractional_crosswalk,
+    build_store,
+    extract_all,
+    merge_parts,
 )
 
 
@@ -61,14 +66,21 @@ FRESH_START = False
 
 
 def parse_args():
+    """Parse command-line overrides for the CONFIG block above."""
     p = argparse.ArgumentParser(description="MRMS download + extraction pipeline")
     p.add_argument("--events-csv", type=Path, default=EVENTS_CSV)
-    p.add_argument("--vpu-subset", default=None,
-                    help="Comma-separated VPU codes, e.g. '03N,02'. Unset -> every VPU "
-                         "present in --events-csv (the VPU_SUBSET default).")
-    p.add_argument("--tag-suffix", default=TAG_SUFFIX,
-                    help="Appended to per-VPU cache/output paths; non-empty disables "
-                         "auto-merge at the end of this run (see TAG_SUFFIX above).")
+    p.add_argument(
+        "--vpu-subset",
+        default=None,
+        help="Comma-separated VPU codes, e.g. '03N,02'. Unset -> every VPU "
+        "present in --events-csv (the VPU_SUBSET default).",
+    )
+    p.add_argument(
+        "--tag-suffix",
+        default=TAG_SUFFIX,
+        help="Appended to per-VPU cache/output paths; non-empty disables "
+        "auto-merge at the end of this run (see TAG_SUFFIX above).",
+    )
     p.add_argument("--cache-dir", type=Path, default=CACHE_DIR)
     p.add_argument("--out-nc", type=Path, default=OUT_NC)
     p.add_argument("--max-workers", type=int, default=MAX_WORKERS)
@@ -79,6 +91,7 @@ def parse_args():
 
 
 def main():
+    """Run the MRMS download and extraction pipeline."""
     args = parse_args()
     events_csv = args.events_csv
     vpu_subset = args.vpu_subset.split(",") if args.vpu_subset else None
@@ -105,8 +118,10 @@ def main():
     vpus = sorted(events["vpuid"].dropna().unique())
     if vpu_subset is not None:
         vpus = [v for v in vpus if v in vpu_subset]
-    print(f"events: {len(events):,} across {len(vpus)} VPU(s): {vpus}"
-          + (f"  [tag suffix: {tag_suffix!r}]" if tag_suffix else ""))
+    print(
+        f"events: {len(events):,} across {len(vpus)} VPU(s): {vpus}"
+        + (f"  [tag suffix: {tag_suffix!r}]" if tag_suffix else ""),
+    )
     print(f"window: {window_days} day(s) centered on '{centroid}'")
 
     # 15-min steps in a window_days-wide window, + a small buffer for the
@@ -130,38 +145,80 @@ def main():
             print(f"  FRESH_START: cleared manifest cache and {vpu_dir}")
 
         manifest, event_catchment_windows = build_manifest(
-            vpu_events, cache_dir, tag=vpu_tag, window_days=window_days, centroid=centroid)
+            vpu_events,
+            cache_dir,
+            tag=vpu_tag,
+            window_days=window_days,
+            centroid=centroid,
+        )
         print(f"  manifest: {len(manifest):,} events resolved to upstream catchments")
 
         divide_ids = event_catchment_windows["divide_id"].unique()
-        cm4326 = catchments_master[catchments_master["divide_id"].isin(divide_ids)].to_crs(4326)
+        cm4326 = catchments_master[
+            catchments_master["divide_id"].isin(divide_ids)
+        ].to_crs(4326)
         minx, miny, maxx, maxy = cm4326.total_bounds
-        bbox = (minx - BBOX_MARGIN_DEG, miny - BBOX_MARGIN_DEG,
-                maxx + BBOX_MARGIN_DEG, maxy + BBOX_MARGIN_DEG)
+        bbox = (
+            minx - BBOX_MARGIN_DEG,
+            miny - BBOX_MARGIN_DEG,
+            maxx + BBOX_MARGIN_DEG,
+            maxy + BBOX_MARGIN_DEG,
+        )
 
-        manifest = manifest.assign(grid_start=manifest["win_start"].dt.floor("2min"),
-                                    grid_end=manifest["win_end"].dt.ceil("2min"))
-        times = pd.DatetimeIndex(sorted(set().union(*[
-            set(pd.date_range(r.grid_start, r.grid_end, freq="2min")) for r in manifest.itertuples()
-        ])))
-        print(f"  bbox: {bbox}  |  {len(divide_ids):,} catchments  |  {len(times):,} timestamps")
+        manifest = manifest.assign(
+            grid_start=manifest["win_start"].dt.floor("2min"),
+            grid_end=manifest["win_end"].dt.ceil("2min"),
+        )
+        times = pd.DatetimeIndex(
+            sorted(
+                set().union(
+                    *[
+                        set(pd.date_range(r.grid_start, r.grid_end, freq="2min"))
+                        for r in manifest.itertuples()
+                    ],
+                ),
+            ),
+        )
+        print(
+            f"  bbox: {bbox}  |  {len(divide_ids):,} catchments  |  {len(times):,} timestamps",
+        )
 
-        build_store(times, bbox, str(vpu_dir), max_workers=max_workers, mask_negative=True,
-                    use_aws=True, verbose=True)
+        build_store(
+            times,
+            bbox,
+            str(vpu_dir),
+            max_workers=max_workers,
+            mask_negative=True,
+            use_aws=True,
+            verbose=True,
+        )
 
-        frac_cw = build_fractional_crosswalk(divide_ids, catchments_master, crosswalk, cache_dir)
+        frac_cw = build_fractional_crosswalk(
+            divide_ids,
+            catchments_master,
+            crosswalk,
+            cache_dir,
+        )
         print(f"  fractional crosswalk: {len(frac_cw):,} cell/catchment pairs")
 
         part_nc = vpu_dir / "mrms_15min_part.nc"
-        extract_all(manifest, event_catchment_windows, frac_cw, vpu_dir / "shards", part_nc,
-                     max_steps=max_steps)
+        extract_all(
+            manifest,
+            event_catchment_windows,
+            frac_cw,
+            vpu_dir / "shards",
+            part_nc,
+            max_steps=max_steps,
+        )
         part_ncs.append(part_nc)
 
     if vpu_subset is None and not tag_suffix:
         merge_parts(part_ncs, out_nc)
     else:
         print(f"\nVPU subset {vpu_subset} / tag {tag_suffix!r} done -> {part_ncs}")
-        print("Run other shards/VPU subsets separately, then merge.py all part files together.")
+        print(
+            "Run other shards/VPU subsets separately, then merge.py all part files together.",
+        )
 
 
 if __name__ == "__main__":

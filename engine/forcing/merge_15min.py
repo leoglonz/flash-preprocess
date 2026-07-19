@@ -28,7 +28,8 @@ Output
 Usage
 -----
     python engine/forcing/merge_15min.py \\
-        --aorc     /path/to/events_15min.nc \\
+        --aorc     /path/to/aorc_15min.nc \\
+        --aorc-hr  /path/to/aorc_hr.nc \\
         --mrms     /path/to/mrms_15min.nc \\
         --output   /path/to/forcing_15min.nc
 """
@@ -43,20 +44,7 @@ from tqdm.auto import tqdm
 
 
 def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
-    """Read a netCDF4 string variable as a plain numpy object array.
-
-    Parameters
-    ----------
-    ds
-        Open netCDF4 Dataset.
-    name
-        Variable name to read.
-
-    Returns
-    -------
-    np.ndarray
-        Object array of Python strings, shape (n,).
-    """
+    """Read a netCDF4 string variable as a plain numpy object array of strings, shape (n,)."""
     raw = ds.variables[name][:]
     if isinstance(raw, np.ma.MaskedArray):
         raw = raw.filled()
@@ -77,6 +65,12 @@ def main() -> None:
         "--aorc",
         required=True,
         help="AORC 15-min NC (output of to_events.py, events_15min.nc)",
+    )
+    parser.add_argument(
+        "--aorc-hr",
+        required=True,
+        help="AORC hourly antecedent NC (aorc_hr.nc), used only to check that "
+        "its warmup window ends exactly where the MRMS event window begins",
     )
     parser.add_argument(
         "--mrms",
@@ -119,7 +113,7 @@ def main() -> None:
     if n_events == 0:
         sys.exit("No events matched between AORC and MRMS files on event_id.")
     print(
-        f"Matched {n_events} events ({skipped} AORC events skipped — "
+        f"Matched {n_events} events ({skipped} AORC events skipped, "
         f"not present in MRMS file)",
     )
 
@@ -139,6 +133,36 @@ def main() -> None:
             f"min, e.g. event {event_ids[np.argmax(bad)]}). The two files were likely built "
             f"with different WINDOW_DAYS/CENTROID settings (or one is stale) -- regenerate "
             f"both from the same run_pipeline.py config before merging.",
+        )
+
+    # The AORC hourly antecedent file (30-day warmup) must end exactly where
+    # the MRMS event window begins, with no gap or overlap -- its stored
+    # ts_end is the timestamp of the *last hourly step itself* (an hourly
+    # value at hour H covers [H, H+1)), so the true end of the warmup period
+    # is ts_end + 60 min, which should equal MRMS's ts_start exactly.
+    nc_aorc_hr = netCDF4.Dataset(args.aorc_hr, "r")
+    aorc_hr_event_ids = _load_str_var(nc_aorc_hr, "event_id")
+    aorc_hr_idx = {eid: i for i, eid in enumerate(aorc_hr_event_ids)}
+    aorc_hr_ts_end = np.array(nc_aorc_hr.variables["ts_end"][:], dtype=np.float64)
+    nc_aorc_hr.close()
+
+    missing_hr = [eid for eid in event_ids if eid not in aorc_hr_idx]
+    if missing_hr:
+        sys.exit(
+            f"{len(missing_hr)}/{n_events} matched events are missing from --aorc-hr "
+            f"(e.g. event {missing_hr[0]}) -- aorc_hr.nc and the AORC/MRMS 15-min files "
+            f"appear to come from different runs.",
+        )
+    hr_end_for_event = np.array([aorc_hr_ts_end[aorc_hr_idx[eid]] for eid in event_ids])
+    gap_min = mrms_ts_start_chk[mrms_indices] - (hr_end_for_event + 60.0)
+    bad_gap = np.abs(gap_min) > 1.0
+    if bad_gap.any():
+        sys.exit(
+            f"{bad_gap.sum()}/{n_events} matched events have a gap/overlap between the AORC "
+            f"hourly warmup and the MRMS event window (median {np.median(gap_min[bad_gap]):.0f} "
+            f"min, e.g. event {event_ids[np.argmax(bad_gap)]}). aorc_hr.ts_end + 60min should "
+            f"equal mrms.ts_start exactly -- the two pipelines likely used different "
+            f"WINDOW_DAYS/ANTECEDENT_DAYS/CENTROID, or one file is stale.",
         )
 
     # align catchments: inner join, report drops from each side
@@ -243,22 +267,7 @@ def main() -> None:
     chunk_c = min(n_catchments, 64)
 
     def _make_var(name: str, units: str, long_name: str) -> netCDF4.Variable:
-        """Create a compressed (event, time_step, catchment) float32 variable.
-
-        Parameters
-        ----------
-        name
-            NetCDF variable name.
-        units
-            CF units string written as a variable attribute.
-        long_name
-            Human-readable description written as a variable attribute.
-
-        Returns
-        -------
-        netCDF4.Variable
-            Newly created variable, pre-filled with NaN.
-        """
+        """Create a compressed (event, time_step, catchment) float32 variable, pre-filled with NaN."""
         nv = nc_out.createVariable(
             name,
             "f4",
@@ -273,38 +282,37 @@ def main() -> None:
         nv.coordinates = "event_id n_steps ts_start ts_end event_gage_id event_divide_id divide_id latitude longitude"
         return nv
 
-    v_dep = _make_var(
-        "P",
-        "mm [15 min]-1",
-        "MRMS precipitation depth"
-    )
-    v_tmp = _make_var(
-        "T",
-        "degC",
-        "Air temperature at 2 m (interpolated)"
-    )
-    v_pet = _make_var(
-        "PET",
-        "mm [15 min]-1",
-        "Penman-Monteith ET0 (15-min, uniform split)",
-    )
+    # Read every event into plain in-memory arrays, then write each variable
+    # to disk in one bulk call below -- a per-event write straight into a
+    # compressed netCDF chunk forces a decompress/recompress of that chunk
+    # on every call, which dominates runtime once there are thousands of
+    # events (reads from the source files don't have this problem, only
+    # writes into the new compressed output do).
+    P = np.full((n_events, max_steps, n_catchments), np.nan, dtype=np.float32)
+    T = np.full((n_events, max_steps, n_catchments), np.nan, dtype=np.float32)
+    PET = np.full((n_events, max_steps, n_catchments), np.nan, dtype=np.float32)
 
-    print(f"Writing {n_events} events ...")
+    print(f"Reading {n_events} events ...")
     for out_i, (ai, mi) in tqdm(
-        enumerate(zip(aorc_indices, mrms_indices)), total=n_events, desc="Writing events",
+        enumerate(zip(aorc_indices, mrms_indices)),
+        total=n_events,
+        desc="Reading events",
     ):
         ns = int(out_n_steps[out_i])
-
-        dep_row = nc_mrms.variables["P"][mi, :ns, :][:, mrms_ci]
-        tmp_row = nc_aorc.variables["T"][ai, :ns, :][:, aorc_ci]
-        pet_row = nc_aorc.variables["PET"][ai, :ns, :][:, aorc_ci]
-
-        v_dep[out_i, :ns, :] = dep_row
-        v_tmp[out_i, :ns, :] = tmp_row
-        v_pet[out_i, :ns, :] = pet_row
+        P[out_i, :ns, :] = nc_mrms.variables["P"][mi, :ns, :][:, mrms_ci]
+        T[out_i, :ns, :] = nc_aorc.variables["T"][ai, :ns, :][:, aorc_ci]
+        PET[out_i, :ns, :] = nc_aorc.variables["PET"][ai, :ns, :][:, aorc_ci]
 
     nc_aorc.close()
     nc_mrms.close()
+
+    print("Writing output ...")
+    _make_var("P", "mm [15 min]-1", "MRMS precipitation depth")[:] = P
+    _make_var("T", "degC", "Air temperature at 2 m (interpolated)")[:] = T
+    _make_var("PET", "mm [15 min]-1", "Penman-Monteith ET0 (15-min, uniform split)")[
+        :
+    ] = PET
+
     nc_out.close()
     print(f"Done -> {args.output}")
     print(

@@ -47,7 +47,12 @@ def load_gage_ids(events_csv: Path, staid_col: str) -> list[str]:
     )
 
 
-def fetch_discharge(site: str, start_date: str, end_date: str, parameter_code: str) -> pd.DataFrame:
+def fetch_discharge(
+    site: str,
+    start_date: str,
+    end_date: str,
+    parameter_code: str,
+) -> pd.DataFrame:
     """Fetch raw instantaneous discharge for one gage from the NWIS IV service."""
     params = {
         'format': 'json',
@@ -74,19 +79,26 @@ def fetch_discharge(site: str, start_date: str, end_date: str, parameter_code: s
 
         for obs in ts['values'][0].get('value', []):
             val = obs.get('value')
-            rows.append({
-                'STAID': site_no,
-                'site_name': site_name,
-                'datetime': obs['dateTime'],
-                'discharge_cfs': float(val) if val not in (None, '') else None,
-                'latitude': lat,
-                'longitude': lon,
-            })
+            rows.append(
+                {
+                    'STAID': site_no,
+                    'site_name': site_name,
+                    'datetime': obs['dateTime'],
+                    'discharge_cfs': float(val) if val not in (None, '') else None,
+                    'latitude': lat,
+                    'longitude': lon,
+                },
+            )
 
     return pd.DataFrame(rows)
 
 
-def download_all(gage_ids: list[str], start_date: str, end_date: str, parameter_code: str) -> pd.DataFrame:
+def download_all(
+    gage_ids: list[str],
+    start_date: str,
+    end_date: str,
+    parameter_code: str,
+) -> pd.DataFrame:
     """Download and concatenate raw discharge for all gages."""
     all_data = []
     empty, failed = [], []
@@ -104,7 +116,12 @@ def download_all(gage_ids: list[str], start_date: str, end_date: str, parameter_
         else:
             all_data.append(df)
 
-    log.info('Successful gages: %d | Empty: %d | Failed: %d', len(all_data), len(empty), len(failed))
+    log.info(
+        'Successful gages: %d | Empty: %d | Failed: %d',
+        len(all_data),
+        len(empty),
+        len(failed),
+    )
     if empty:
         log.info('Empty gages: %s', empty)
     if failed:
@@ -115,16 +132,28 @@ def download_all(gage_ids: list[str], start_date: str, end_date: str, parameter_
 
     discharge = pd.concat(all_data, ignore_index=True)
     # Sort by a parsed helper column but keep the original mixed-offset
-    # datetime strings intact — to_utc_15min() does the real UTC conversion.
+    # datetime strings intact; to_utc_15min() does the real UTC conversion.
     sort_key = pd.to_datetime(discharge['datetime'], utc=True)
-    discharge = discharge.assign(_sort_key=sort_key).sort_values(['STAID', '_sort_key']).drop(columns='_sort_key')
+    discharge = (
+        discharge.assign(_sort_key=sort_key)
+        .sort_values(['STAID', '_sort_key'])
+        .drop(columns='_sort_key')
+    )
     return discharge.reset_index(drop=True)
 
 
-def to_utc_15min(discharge: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
+def to_utc_15min(
+    discharge: pd.DataFrame,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
     """Convert mixed-offset local timestamps to UTC and resample to a 15-min grid."""
     discharge = discharge.copy()
-    discharge['datetime'] = pd.to_datetime(discharge['datetime'], errors='coerce', utc=True)
+    discharge['datetime'] = pd.to_datetime(
+        discharge['datetime'],
+        errors='coerce',
+        utc=True,
+    )
     discharge = discharge.dropna(subset=['datetime'])
     discharge['datetime'] = discharge['datetime'].dt.tz_localize(None)
 
@@ -158,12 +187,38 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--events', type=Path, required=True, help='Events/gages CSV with a STAID column')
-    parser.add_argument('--staid-col', default='STAID', help='STAID column name (default: %(default)s)')
-    parser.add_argument('--start', required=True, help='Study period start date, e.g. 2021-01-01')
-    parser.add_argument('--end', required=True, help='Study period end date, e.g. 2025-12-31')
-    parser.add_argument('--parameter-code', default='00060', help='NWIS parameter code (default: %(default)s)')
-    parser.add_argument('--raw-cache', type=Path, default=None, help='Optional path to cache raw (pre-UTC) download, reused if it already exists')
+    parser.add_argument(
+        '--events',
+        type=Path,
+        required=True,
+        help='Events/gages CSV with a STAID column',
+    )
+    parser.add_argument(
+        '--staid-col',
+        default='STAID',
+        help='STAID column name (default: %(default)s)',
+    )
+    parser.add_argument(
+        '--start',
+        required=True,
+        help='Study period start date, e.g. 2021-01-01',
+    )
+    parser.add_argument(
+        '--end',
+        required=True,
+        help='Study period end date, e.g. 2025-12-31',
+    )
+    parser.add_argument(
+        '--parameter-code',
+        default='00060',
+        help='NWIS parameter code (default: %(default)s)',
+    )
+    parser.add_argument(
+        '--raw-cache',
+        type=Path,
+        default=None,
+        help='Optional path to cache raw (pre-UTC) download, reused if it already exists',
+    )
     parser.add_argument('--output', type=Path, required=True, help='Output CSV path')
     args = parser.parse_args()
 
@@ -184,7 +239,12 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     discharge.to_csv(args.output, index=False)
-    log.info('Wrote %s (%d rows, %d gages)', args.output, len(discharge), discharge['STAID'].nunique())
+    log.info(
+        'Wrote %s (%d rows, %d gages)',
+        args.output,
+        len(discharge),
+        discharge['STAID'].nunique(),
+    )
 
 
 if __name__ == '__main__':

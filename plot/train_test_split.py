@@ -31,6 +31,7 @@ OUT_PATH = Path(__file__).parent / "train_test_split.png"
 
 
 def main() -> None:
+    """Plot the train/test storm-event split per gauge."""
     rows = sorted(DATA, key=lambda r: r[1] + r[2], reverse=True)
     gauges = [r[0] for r in rows]
     train = np.array([r[1] for r in rows])
@@ -41,14 +42,37 @@ def main() -> None:
     x = np.arange(len(gauges))
     width = 0.6
 
-    ax.bar(x, train, width, label="Train (2020-2024)", color=TRAIN_COLOR,
-           edgecolor="white", linewidth=0.6)
-    ax.bar(x, test, width, bottom=train, label="Test (2024-2025)", color=TEST_COLOR,
-           edgecolor="white", linewidth=0.6)
+    ax.bar(
+        x,
+        train,
+        width,
+        label="Train (2020-2024)",
+        color=TRAIN_COLOR,
+        edgecolor="white",
+        linewidth=0.6,
+    )
+    ax.bar(
+        x,
+        test,
+        width,
+        bottom=train,
+        label="Test (2024-2025)",
+        color=TEST_COLOR,
+        edgecolor="white",
+        linewidth=0.6,
+    )
 
     for xi, t in zip(x, total):
-        ax.text(xi, t + 8, f"{t:,}", ha="center", va="bottom", fontsize=9,
-                 fontweight="bold", color="#0b0b0b")
+        ax.text(
+            xi,
+            t + 8,
+            f"{t:,}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+            color="#0b0b0b",
+        )
 
     ax.set_xticks(x)
     ax.set_xticklabels(gauges, rotation=45, ha="right", fontsize=9)
@@ -56,7 +80,8 @@ def main() -> None:
     ax.set_title(
         "Flash Flood Event Data Split, by USGS Gauge\n"
         "Train [2020/01/01 - 2024/09/30]  |  Test [2024/10/01 - 2025/12/31]",
-        fontsize=13, loc="left",
+        fontsize=13,
+        loc="left",
     )
     ax.set_ylim(0, total.max() * 1.15)
     ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.5, zorder=0)
@@ -67,10 +92,15 @@ def main() -> None:
 
     n_train, n_test = train.sum(), test.sum()
     ax.text(
-        0.99, -0.30,
+        0.99,
+        -0.30,
         f"Total: {n_train + n_test:,} events   "
         f"({n_train:,} train, {n_test:,} test, {n_test / (n_train + n_test):.1%} test share)",
-        transform=ax.transAxes, ha="right", va="top", fontsize=9.5, color="#52514e",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9.5,
+        color="#52514e",
     )
 
     fig.tight_layout()

@@ -25,6 +25,8 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
+from flash_preprocess.paths import HYDROFABRIC_GPKG
+
 log = logging.getLogger('AssignGageCatchment')
 
 
@@ -101,11 +103,33 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--csv', type=Path, required=True, help='CSV with gage STAID + lat/lon')
-    parser.add_argument('--gpkg', type=Path, required=True, help='Path to conus_nextgen.gpkg')
-    parser.add_argument('--staid-col', default='STAID', help='STAID column name (default: %(default)s)')
-    parser.add_argument('--lat-col', default='gage_lat', help='Latitude column name (default: %(default)s)')
-    parser.add_argument('--lon-col', default='gage_lon', help='Longitude column name (default: %(default)s)')
+    parser.add_argument(
+        '--csv',
+        type=Path,
+        required=True,
+        help='CSV with gage STAID + lat/lon',
+    )
+    parser.add_argument(
+        '--gpkg',
+        type=Path,
+        default=HYDROFABRIC_GPKG,
+        help='Path to conus_nextgen.gpkg (default: config.yaml hydrofabric_gpkg)',
+    )
+    parser.add_argument(
+        '--staid-col',
+        default='STAID',
+        help='STAID column name (default: %(default)s)',
+    )
+    parser.add_argument(
+        '--lat-col',
+        default='gage_lat',
+        help='Latitude column name (default: %(default)s)',
+    )
+    parser.add_argument(
+        '--lon-col',
+        default='gage_lon',
+        help='Longitude column name (default: %(default)s)',
+    )
     parser.add_argument('--output', type=Path, required=True, help='Output CSV path')
     args = parser.parse_args()
 
@@ -113,7 +137,12 @@ def main():
     network, flowpaths = read_hydrofabric(str(args.gpkg))
 
     out = assign_gage_catchments(
-        gages, network, flowpaths, args.staid_col, args.lat_col, args.lon_col,
+        gages,
+        network,
+        flowpaths,
+        args.staid_col,
+        args.lat_col,
+        args.lon_col,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

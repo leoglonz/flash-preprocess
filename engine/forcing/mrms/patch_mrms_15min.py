@@ -27,14 +27,19 @@ import netCDF4
 
 # CONFIG
 ORIG_NC = Path('/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc')
-PATCH_NC = Path('/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min_reextracted.nc')
+PATCH_NC = Path(
+    '/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min_reextracted.nc',
+)
 
 
 def main() -> None:
+    """Patch corrected precipitation from PATCH_NC into ORIG_NC."""
     backups = sorted(ORIG_NC.parent.glob(f'{ORIG_NC.name}.bak_*'))
     if not backups:
-        raise SystemExit(f'No backup found for {ORIG_NC} (expected {ORIG_NC}.bak_*) '
-                          '-- back it up before patching.')
+        raise SystemExit(
+            f'No backup found for {ORIG_NC} (expected {ORIG_NC}.bak_*) '
+            '-- back it up before patching.',
+        )
     print(f'Backup confirmed: {backups[-1]}')
 
     orig = netCDF4.Dataset(ORIG_NC, 'r')
@@ -49,8 +54,10 @@ def main() -> None:
     patch_divides = np.array(patch.variables['divide_id'][:], dtype=str)
     missing_divides = [d for d in patch_divides if d not in orig_idx_by_divide]
     if missing_divides:
-        raise SystemExit(f'{len(missing_divides)} patch catchment(s) not found in '
-                          f'original divide_id axis: {missing_divides[:5]}')
+        raise SystemExit(
+            f'{len(missing_divides)} patch catchment(s) not found in '
+            f'original divide_id axis: {missing_divides[:5]}',
+        )
     patch_cols = np.array([orig_idx_by_divide[d] for d in patch_divides])
 
     P_orig = orig.variables['P'][:]  # masked array, (event, time_step, catchment)
@@ -66,8 +73,10 @@ def main() -> None:
         P_orig[i, :, patch_cols] = P_patch[k, :, :].T
         n_patched += 1
 
-    print(f'Patched {n_patched} events ({n_missing} storm_id from patch file not '
-          f'found in original)')
+    print(
+        f'Patched {n_patched} events ({n_missing} storm_id from patch file not '
+        f'found in original)',
+    )
 
     tmp_path = str(ORIG_NC) + '.tmp'
     nc_out = netCDF4.Dataset(tmp_path, 'w', format='NETCDF4')
@@ -101,12 +110,18 @@ def main() -> None:
     v[:] = orig_divides.astype(object)
 
     v_data = nc_out.createVariable(
-        'P', 'f4', ('event', 'time_step', 'catchment'),
-        fill_value=np.nan, zlib=True, complevel=4,
+        'P',
+        'f4',
+        ('event', 'time_step', 'catchment'),
+        fill_value=np.nan,
+        zlib=True,
+        complevel=4,
         chunksizes=(min(16, n_event), n_time, min(64, n_cat)),
     )
     v_data.units = orig.variables['P'].units
-    v_data.long_name = 'MRMS precipitation depth (patched: re-extracted for flagged events)'
+    v_data.long_name = (
+        'MRMS precipitation depth (patched: re-extracted for flagged events)'
+    )
     v_data.coordinates = orig.variables['P'].coordinates
     v_data[:] = P_orig
 

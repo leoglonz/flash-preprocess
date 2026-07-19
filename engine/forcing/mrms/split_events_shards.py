@@ -28,11 +28,16 @@ import pandas as pd
 
 
 def main() -> None:
+    """Split an events CSV into N time-contiguous shards."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--events-csv", type=Path, required=True)
     ap.add_argument("--n-shards", type=int, required=True)
-    ap.add_argument("--out-dir", type=Path, default=None,
-                     help="Defaults to --events-csv's own directory.")
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Defaults to --events-csv's own directory.",
+    )
     args = ap.parse_args()
 
     out_dir = args.out_dir or args.events_csv.parent
@@ -42,7 +47,11 @@ def main() -> None:
     print(f"{len(events):,} events -> {args.n_shards} shard(s)")
 
     sort_key = pd.to_datetime(events["BEGIN_DATE_TIME"], utc=True)
-    events = events.assign(_sort_key=sort_key).sort_values("_sort_key").reset_index(drop=True)
+    events = (
+        events.assign(_sort_key=sort_key)
+        .sort_values("_sort_key")
+        .reset_index(drop=True)
+    )
     events["shard"] = np.arange(len(events)) * args.n_shards // len(events)
 
     stem = args.events_csv.stem

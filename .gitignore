@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# Per-user local paths (see config.yaml.example)
+config.yaml
+
 # Distribution / packaging
 .Python
 build/

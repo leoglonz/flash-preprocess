@@ -39,6 +39,7 @@ dependencies = [
     "numpy",
     "pandas",
     "pyarrow",
+    "pyyaml",
     "requests",
     "scipy",
     "s3fs",

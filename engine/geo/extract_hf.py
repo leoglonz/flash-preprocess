@@ -44,6 +44,7 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
+from flash_preprocess.paths import HYDROFABRIC_GPKG
 from flash_preprocess.utils import build_upstream_graph, expand_upstream
 
 log = logging.getLogger('ExtractHF')
@@ -144,7 +145,7 @@ def find_gages_in_region(
     DataFrame
         columns: STAID, divide_id (int), DRAIN_SQKM.
     """
-    # Split the OR join into two indexed queries and UNION — a single JOIN with
+    # Split the OR join into two indexed queries and UNION: a single JOIN with
     # OR prevents SQLite from using any index, causing a full cross-scan.
     rows = conn.execute(
         """
@@ -240,8 +241,8 @@ def main():
     parser.add_argument(
         '--gpkg',
         type=Path,
-        required=True,
-        help='Path to conus_nextgen.gpkg',
+        default=HYDROFABRIC_GPKG,
+        help='Path to conus_nextgen.gpkg (default: config.yaml hydrofabric_gpkg)',
     )
     parser.add_argument(
         '--output-dir',

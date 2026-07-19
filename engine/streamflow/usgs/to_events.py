@@ -10,9 +10,9 @@ Input CSV columns (long format):
 Output NC structure
 -------------------
   Dimensions:
-    event     — number of storm events (same order as forcing_15min.nc)
-    time_step — maximum 15-min steps per event
-    gauge     — number of USGS gauges present in the CSV
+    event     - number of storm events (same order as forcing_15min.nc)
+    time_step - maximum 15-min steps per event
+    gauge     - number of USGS gauges present in the CSV
 
   Coordinates:
     event_id  (event,)  str  shared event ID (copied from forcing NC)
@@ -98,7 +98,6 @@ def main() -> None:
     n_events = len(event_ids)
     print(f"Forcing NC: {n_events} events, max_steps={max_steps}")
 
-
     print(f"Reading CSV: {args.csv}")
     df_raw = pd.read_csv(
         args.csv,
@@ -136,10 +135,12 @@ def main() -> None:
         times_15min = pd.date_range(start=t_start, end=t_end, freq="15min")
         n_window = min(ns, len(times_15min), max_steps)
 
-        # searchsorted for bulk alignment — O(n_window * log N) vs O(N^2)
+        # searchsorted for bulk alignment: O(n_window * log N) vs O(N^2)
         match_idx = obs_times.searchsorted(times_15min[:n_window])
         valid = match_idx < len(obs_times)
-        exact = valid & (obs_times[np.where(valid, match_idx, 0)] == times_15min[:n_window])
+        exact = valid & (
+            obs_times[np.where(valid, match_idx, 0)] == times_15min[:n_window]
+        )
 
         if not exact.any():
             continue
@@ -152,7 +153,9 @@ def main() -> None:
 
         if (e_idx + 1) % 50 == 0 or e_idx == n_events - 1:
             coverage = exact.sum()
-            print(f"  event {e_idx + 1}/{n_events}: {coverage}/{n_window} timesteps matched")
+            print(
+                f"  event {e_idx + 1}/{n_events}: {coverage}/{n_window} timesteps matched",
+            )
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     nc_out = netCDF4.Dataset(args.output, "w", format="NETCDF4")
