@@ -20,3 +20,5 @@ with open(_CONFIG_PATH) as f:
 HYDROFABRIC_GPKG = Path(_config['hydrofabric_gpkg'])
 EVENTS_CSV = Path(_config['events_csv'])
 CACHE_DIR = Path(_config['cache_dir'])
+STUDY_START = str(_config['study_start'])
+STUDY_END = str(_config['study_end'])

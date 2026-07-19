@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from collections import deque
 
@@ -8,6 +9,8 @@ from exactextract import exact_extract
 from exactextract.raster import NumPyRasterSource
 
 from flash_preprocess.paths import HYDROFABRIC_GPKG
+
+log = logging.getLogger('FlashPreprocessUtils')
 
 HF_PATH_DEFAULT = str(HYDROFABRIC_GPKG)
 
@@ -25,7 +28,7 @@ def build_upstream_graph(hf_path: str) -> dict[str, list[str]]:
     dict
         Mapping of divide_id -> list of upstream divide_ids.
     """
-    print("  Building upstream graph from hydrofabric...")
+    log.info('Building upstream graph from hydrofabric...')
     conn = sqlite3.connect(hf_path)
     divides = pd.read_sql("SELECT divide_id, toid FROM divides", conn)
     nexus = pd.read_sql("SELECT id, toid FROM nexus", conn)

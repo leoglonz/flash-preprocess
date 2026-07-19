@@ -34,11 +34,14 @@ Usage
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 import netCDF4
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger('USGS-ToEvents')
 
 _EPOCH = pd.Timestamp('1970-01-01', tz='UTC')
 _MIN_TO_NS = 60 * 1_000_000_000  # nanoseconds per minute
@@ -62,6 +65,7 @@ def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
 
 def main() -> None:
     """CLI entry point."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     parser = argparse.ArgumentParser(
         description="Convert USGS discharge CSV to event-indexed NetCDF.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -96,9 +100,9 @@ def main() -> None:
     nc_f.close()
 
     n_events = len(event_ids)
-    print(f"Forcing NC: {n_events} events, max_steps={max_steps}")
+    log.info('Forcing NC: %d events, max_steps=%d', n_events, max_steps)
 
-    print(f"Reading CSV: {args.csv}")
+    log.info('Reading CSV: %s', args.csv)
     df_raw = pd.read_csv(
         args.csv,
         usecols=['STAID', 'datetime', 'discharge_cfs'],
@@ -119,7 +123,7 @@ def main() -> None:
 
     gauge_ids: list[str] = list(df_wide.columns)
     n_gauges = len(gauge_ids)
-    print(f"CSV: {n_gauges} gauges, {len(df_wide)} 15-min timesteps")
+    log.info('CSV: %d gauges, %d 15-min timesteps', n_gauges, len(df_wide))
 
     obs_times = df_wide.index  # DatetimeIndex, UTC-aware
 
@@ -153,8 +157,12 @@ def main() -> None:
 
         if (e_idx + 1) % 50 == 0 or e_idx == n_events - 1:
             coverage = exact.sum()
-            print(
-                f"  event {e_idx + 1}/{n_events}: {coverage}/{n_window} timesteps matched",
+            log.info(
+                'event %d/%d: %d/%d timesteps matched',
+                e_idx + 1,
+                n_events,
+                coverage,
+                n_window,
             )
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -199,8 +207,13 @@ def main() -> None:
     v_sf[:] = streamflow
 
     nc_out.close()
-    print(f"Done -> {args.output}")
-    print(f"  Shape: ({n_events} events, {max_steps} time_steps, {n_gauges} gauges)")
+    log.info('Done -> %s', args.output)
+    log.info(
+        'Shape: (%d events, %d time_steps, %d gauges)',
+        n_events,
+        max_steps,
+        n_gauges,
+    )
 
 
 if __name__ == '__main__':

@@ -1,22 +1,10 @@
 r"""Download USGS 15-minute instantaneous discharge for gages in an events CSV.
 
-Fetches raw instantaneous-values discharge (parameter 00060) from the USGS
-NWIS API for every gage in `--events` (STAID column), converts timestamps
-from local (mixed-offset) time to UTC, and resamples to a fixed 15-minute
-UTC grid. Output is a long-format CSV:
+Outputs:
+    - 15-min resolution discharge CSV for all gages.
 
-    STAID, site_name, datetime, discharge_cfs, latitude, longitude
-
-This is a script version of discharge_data.ipynb / discharge.ipynb, driven
-off the events CSV (which carries the gage list we actually need obs for)
-instead of a separate huc8_events_and_gages.csv.
-
-Usage
------
-    python engine/streamflow/usgs/download_discharge.py \
-        --events /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv \
-        --start 2021-01-01 --end 2025-12-31 \
-        --output /gpfs/leoglonz/sub_hourly/data/upper_neuse_usgs/usgs_discharge.csv
+Edit the CONFIG block at the top of this file to set all options, or
+override per-invocation via CLI flags (see below).
 """
 
 import argparse
@@ -27,12 +15,35 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-log = logging.getLogger('USGS-Download')
+from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
+from flash_preprocess.paths import STUDY_START as _STUDY_START
+from flash_preprocess.paths import STUDY_END as _STUDY_END
+
+log = logging.getLogger('USGS-Extract')
 
 
-### DEFAULTS --------------- #
-# NWIS Instantaneous Values service URL for USGS discharge (00060).
-NWIS_IV_URL = 'https://waterservices.usgs.gov/nwis/iv/'
+# CONFIG -------------------------- #
+# Events/gages CSV with a STAID column.
+EVENTS_CSV = _EVENTS_CSV
+STAID_COL = 'STAID'
+
+# Study period.
+STUDY_START = _STUDY_START
+STUDY_END = _STUDY_END
+
+# NWIS parameter code (00060 = discharge).
+PARAMETER_CODE = '00060'
+
+# Optional path to cache the raw (pre-UTC) download, reused if it already
+# exists.
+#   None -- always re-download.
+RAW_CACHE = None
+
+# Output CSV path.
+OUTPUT_CSV = EVENTS_CSV.parent / 'usgs_discharge.csv'
+
+# NWIS Instantaneous Values service URL for USGS.
+_NWIS_URL = 'https://waterservices.usgs.gov/nwis/iv/'
 # -------------------------- #
 
 
@@ -66,7 +77,7 @@ def fetch_discharge(
         'endDT': end_date,
         'siteStatus': 'all',
     }
-    r = requests.get(NWIS_IV_URL, params=params, timeout=60)
+    r = requests.get(_NWIS_URL, params=params, timeout=60)
     r.raise_for_status()
 
     series = r.json()['value'].get('timeSeries', [])
@@ -135,8 +146,6 @@ def download_all(
         raise RuntimeError('No discharge data retrieved for any gage.')
 
     discharge = pd.concat(all_data, ignore_index=True)
-    # Sort by a parsed helper column but keep the original mixed-offset
-    # datetime strings intact; to_utc_15min() does the real UTC conversion.
     sort_key = pd.to_datetime(discharge['datetime'], utc=True)
     discharge = (
         discharge.assign(_sort_key=sort_key)
@@ -183,48 +192,57 @@ def to_utc_15min(
     ].sort_values(['STAID', 'datetime'])
 
 
-def main():
-    """Parse CLI args and run the discharge download + resample pipeline."""
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
-
-    parser = argparse.ArgumentParser(
+def parse_args():
+    """Parse command-line overrides for the CONFIG block above."""
+    p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
+    p.add_argument(
         '--events',
         type=Path,
-        required=True,
-        help='Events/gages CSV with a STAID column',
+        default=EVENTS_CSV,
+        help='Events/gages CSV with a STAID column (default: %(default)s)',
     )
-    parser.add_argument(
+    p.add_argument(
         '--staid-col',
-        default='STAID',
+        default=STAID_COL,
         help='STAID column name (default: %(default)s)',
     )
-    parser.add_argument(
+    p.add_argument(
         '--start',
-        required=True,
-        help='Study period start date, e.g. 2021-01-01',
+        default=STUDY_START,
+        help='Study period start date, e.g. 2021-01-01 (default: %(default)s)',
     )
-    parser.add_argument(
+    p.add_argument(
         '--end',
-        required=True,
-        help='Study period end date, e.g. 2025-12-31',
+        default=STUDY_END,
+        help='Study period end date, e.g. 2025-12-31 (default: %(default)s)',
     )
-    parser.add_argument(
+    p.add_argument(
         '--parameter-code',
-        default='00060',
+        default=PARAMETER_CODE,
         help='NWIS parameter code (default: %(default)s)',
     )
-    parser.add_argument(
+    p.add_argument(
         '--raw-cache',
         type=Path,
-        default=None,
+        default=RAW_CACHE,
         help='Optional path to cache raw (pre-UTC) download, reused if it already exists',
     )
-    parser.add_argument('--output', type=Path, required=True, help='Output CSV path')
-    args = parser.parse_args()
+    p.add_argument(
+        '--output',
+        type=Path,
+        default=OUTPUT_CSV,
+        help='Output CSV path (default: %(default)s)',
+    )
+    return p.parse_args()
+
+
+def usgs_extract():
+    """Run the discharge download + resample pipeline."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    args = parse_args()
 
     gage_ids = load_gage_ids(args.events, args.staid_col)
     log.info('Found %d unique gages in %s', len(gage_ids), args.events)
@@ -252,4 +270,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    usgs_extract()

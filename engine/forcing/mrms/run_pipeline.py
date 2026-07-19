@@ -10,6 +10,7 @@ override per-invocation via CLI flags (see below).
 """
 
 import argparse
+import logging
 import shutil
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from flash_preprocess.mrms import (
 from flash_preprocess.paths import CACHE_DIR as _CACHE_DIR
 from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
 
+log = logging.getLogger('MRMS-Extract')
+
 
 # CONFIG -------------------------- #
 # Flash flood event registry.
@@ -35,7 +38,7 @@ EVENTS_CSV = _EVENTS_CSV
 EVENT_IDS = None
 
 # VPUs to process in this runtime.
-#   None = every VPU in EVENTS_CSV; else e.g. [ "01", "03N"],
+#   None = every VPU in EVENTS_CSV; else e.g. ['01', '03N']
 VPU_SUBSET = None
 
 # Appended to every per-VPU cache/output path so concurrent instances
@@ -99,8 +102,9 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
+def mrms_extract():
     """Run the MRMS download and extraction pipeline."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     args = parse_args()
     events_csv = args.events_csv
     vpu_subset = args.vpu_subset.split(',') if args.vpu_subset else None
@@ -113,10 +117,10 @@ def main():
     fresh_start = args.fresh_start
 
     catchments_master, network, flowpaths, nexus = load_hydrofabric(cache_dir)
-    print(f"hydrofabric: {len(catchments_master):,} catchments")
+    log.info('hydrofabric: %d catchments', len(catchments_master))
 
     crosswalk = build_crosswalk(catchments_master, cache_dir)
-    print(f"crosswalk: {len(crosswalk):,} MRMS cells")
+    log.info('crosswalk: %d MRMS cells', len(crosswalk))
 
     events = pd.read_csv(events_csv, dtype={'STAID': str})
     if EVENT_IDS is not None:
@@ -127,20 +131,23 @@ def main():
     vpus = sorted(events['vpuid'].dropna().unique())
     if vpu_subset is not None:
         vpus = [v for v in vpus if v in vpu_subset]
-    print(
-        f"events: {len(events):,} across {len(vpus)} VPU(s): {vpus}"
-        + (f"  [tag suffix: {tag_suffix!r}]" if tag_suffix else ''),
+    log.info(
+        'events: %d across %d VPU(s): %s%s',
+        len(events),
+        len(vpus),
+        vpus,
+        f' [tag suffix: {tag_suffix!r}]' if tag_suffix else '',
     )
-    print(f"window: {window_days} day(s) centered on '{centroid}'")
+    log.info("window: %s day(s) centered on '%s'", window_days, centroid)
 
-    # 15-min steps in a window_days-wide window, + a small buffer for the
-    # outward 15-min-grid rounding in build_manifest possibly adding a step.
+    # 15-min steps in a window_days-wide window, + small buffer for the
+    # outward 15-min-grid rounding in build_manifest.
     max_steps = int(round(window_days * 24 * 60 / 15)) + 1
 
     part_ncs = []
     for vpu in vpus:
         vpu_tag = f'{vpu}{tag_suffix}'
-        print(f"\n=== VPU {vpu}  (tag: {vpu_tag}) ===")
+        log.info('=== VPU %s  (tag: %s) ===', vpu, vpu_tag)
         vpu_events = events[events['vpuid'] == vpu]
         vpu_dir = cache_dir / 'vpu_runs' / vpu_tag
 
@@ -151,7 +158,7 @@ def main():
                 f.unlink(missing_ok=True)
             if vpu_dir.exists():
                 shutil.rmtree(vpu_dir)
-            print(f"  FRESH_START: cleared manifest cache and {vpu_dir}")
+            log.info('FRESH_START: cleared manifest cache and %s', vpu_dir)
 
         manifest, event_catchment_windows = build_manifest(
             vpu_events,
@@ -160,7 +167,10 @@ def main():
             window_days=window_days,
             centroid=centroid,
         )
-        print(f"  manifest: {len(manifest):,} events resolved to upstream catchments")
+        log.info(
+            'manifest: %d events resolved to upstream catchments',
+            len(manifest),
+        )
 
         divide_ids = event_catchment_windows['divide_id'].unique()
         cm4326 = catchments_master[
@@ -188,8 +198,11 @@ def main():
                 ),
             ),
         )
-        print(
-            f"  bbox: {bbox}  |  {len(divide_ids):,} catchments  |  {len(times):,} timestamps",
+        log.info(
+            'bbox: %s  |  %d catchments  |  %d timestamps',
+            bbox,
+            len(divide_ids),
+            len(times),
         )
 
         build_store(
@@ -208,7 +221,7 @@ def main():
             crosswalk,
             cache_dir,
         )
-        print(f"  fractional crosswalk: {len(frac_cw):,} cell/catchment pairs")
+        log.info('fractional crosswalk: %d cell/catchment pairs', len(frac_cw))
 
         part_nc = vpu_dir / 'mrms_15min_part.nc'
         extract_all(
@@ -224,11 +237,11 @@ def main():
     if vpu_subset is None and not tag_suffix:
         merge_parts(part_ncs, out_nc)
     else:
-        print(f"\nVPU subset {vpu_subset} / tag {tag_suffix!r} done -> {part_ncs}")
-        print(
-            "Run other shards/VPU subsets separately, then merge.py all part files together.",
+        log.info('VPU subset %s / tag %r done -> %s', vpu_subset, tag_suffix, part_ncs)
+        log.info(
+            'Run other shards/VPU subsets separately, then merge.py all part files together.',
         )
 
 
 if __name__ == '__main__':
-    main()
+    mrms_extract()

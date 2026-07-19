@@ -15,14 +15,18 @@ Usage
 """
 
 import argparse
+import logging
 import time
 from pathlib import Path
 
 import xarray as xr
 
+log = logging.getLogger('StripCompression')
+
 
 def main() -> None:
     """Rewrite an event-indexed forcing NetCDF without zlib compression."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -31,10 +35,10 @@ def main() -> None:
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
 
-    print(f'Reading {args.input} (decompressing, one-time cost) ...')
+    log.info('Reading %s (decompressing, one-time cost) ...', args.input)
     t0 = time.time()
     ds = xr.open_dataset(args.input).load()
-    print(f'  done ({time.time() - t0:.1f}s)')
+    log.info('done (%.1fs)', time.time() - t0)
 
     # Build a minimal, netCDF4-backend-valid encoding per variable: no
     # compression, but keep dtype/_FillValue/chunksizes where present (the
@@ -47,16 +51,20 @@ def main() -> None:
         enc['zlib'] = False
         encoding[name] = enc
 
-    print(f'Writing {args.output} (uncompressed) ...')
+    log.info('Writing %s (uncompressed) ...', args.output)
     t1 = time.time()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(args.output, encoding=encoding)
-    print(f'  done ({time.time() - t1:.1f}s)')
+    log.info('done (%.1fs)', time.time() - t1)
 
     in_size = args.input.stat().st_size / 1e9
     out_size = args.output.stat().st_size / 1e9
-    print(
-        f'\n{args.input.name}: {in_size:.2f} GB -> {args.output.name}: {out_size:.2f} GB',
+    log.info(
+        '%s: %.2f GB -> %s: %.2f GB',
+        args.input.name,
+        in_size,
+        args.output.name,
+        out_size,
     )
 
 

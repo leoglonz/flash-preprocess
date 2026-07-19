@@ -3,27 +3,34 @@ r"""Merge AORC and MRMS 15-min NetCDFs into a single combined forcing file.
 MRMS's `storm_id` is the same ID as AORC's `event_id` (aggregate_events.py
 names its files storm_<event_id>_15min.nc). This script:
   1. Joins AORC and MRMS on event_id (MRMS storm_id cast to str).
-  2. Aligns catchments by ID (inner join on divide_id / catchment strings).
-  3. Writes a combined (event, time_step, catchment) NetCDF with variables
-     from both sources.
+  2. Aligns catchments by ID *per event* (inner join on divide_id / catchment
+     strings, independently for each matched event).
+  3. Writes a combined NetCDF using ragged (CSR) per-event catchment storage
+     -- see flash_preprocess.mrms.merge_parts for why: AORC and MRMS parts
+     can each span several disjoint-catchment VPUs/basins, and unioning
+     every event's catchments onto one shared dense axis scales with the
+     *sum* of every basin's catchments rather than any single event's own
+     (small) upstream set.
 
 Output
 ------
   Coordinates:
     event_id        (event,)     str     shared AORC/MRMS event ID
     n_steps         (event,)     i32     valid 15-min steps (minimum of both sources)
-    ts_start        (event,)     f64     start of the 5-day window (minutes since 1970-01-01)
-    ts_end          (event,)     f64     end of the 5-day window (minutes since 1970-01-01)
+    ts_start        (event,)     f64     start of the window (minutes since 1970-01-01)
+    ts_end          (event,)     f64     end of the window (minutes since 1970-01-01)
     event_gage_id   (event,)     str     zero-padded 8-digit USGS gauge downstream of event
     event_divide_id (event,)     str     NextGen catchment ID downstream of event
-    catchment       (catchment,) str     NextGen divide ID (intersection of both files)
-    latitude        (catchment,) f32
-    longitude       (catchment,) f32
+    cat_ptr         (event+1,)   i64     CSR offsets: event i's catchments are
+                                          entry[cat_ptr[i]:cat_ptr[i+1]]
+    divide_id       (entry,)     str     NextGen divide ID (per-event inner join)
+    latitude        (entry,)     f32
+    longitude       (entry,)     f32
 
-  Variables:
-    P     (event, time_step, catchment)  f32  from MRMS
-    T               (event, time_step, catchment)  f32  from AORC
-    PET                (event, time_step, catchment)  f32  from AORC
+  Variables (all (entry, time_step) f32):
+    P     from MRMS
+    T     from AORC
+    PET   from AORC
 
 Usage
 -----
@@ -35,6 +42,7 @@ Usage
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -42,10 +50,12 @@ import netCDF4
 import numpy as np
 from tqdm.auto import tqdm
 
+log = logging.getLogger('MergeForcing')
 
-def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
-    """Read a netCDF4 string variable as a plain numpy object array of strings, shape (n,)."""
-    raw = ds.variables[name][:]
+
+def _load_str_var(ds: netCDF4.Dataset, name: str, idx=None) -> np.ndarray:
+    """Read a netCDF4 string variable (optionally a slice) as a plain numpy object array."""
+    raw = ds.variables[name][:] if idx is None else ds.variables[name][idx]
     if isinstance(raw, np.ma.MaskedArray):
         raw = raw.filled()
     out = np.empty(len(raw), dtype=object)
@@ -56,6 +66,7 @@ def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
 
 def main() -> None:
     """Parse CLI arguments and run the AORC + MRMS merge pipeline."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     parser = argparse.ArgumentParser(
         description="Merge AORC and MRMS 15-min forcing NetCDFs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -112,9 +123,10 @@ def main() -> None:
     n_events = len(aorc_indices)
     if n_events == 0:
         sys.exit("No events matched between AORC and MRMS files on event_id.")
-    print(
-        f"Matched {n_events} events ({skipped} AORC events skipped, "
-        f"not present in MRMS file)",
+    log.info(
+        'Matched %d events (%d AORC events skipped, not present in MRMS file)',
+        n_events,
+        skipped,
     )
 
     # Both files' event windows come from the same build_manifest() logic,
@@ -165,49 +177,21 @@ def main() -> None:
             f"WINDOW_DAYS/ANTECEDENT_DAYS/CENTROID, or one file is stale.",
         )
 
-    # align catchments: inner join, report drops from each side
-    aorc_cats = _load_str_var(nc_aorc, 'divide_id')
-    mrms_cats = _load_str_var(nc_mrms, 'divide_id')
-    aorc_set = set(aorc_cats)
-    mrms_set = set(mrms_cats)
-    common = sorted(aorc_set & mrms_set)
-    if not common:
-        sys.exit("No common catchments between AORC and MRMS files.")
-    only_aorc = sorted(aorc_set - mrms_set)
-    only_mrms = sorted(mrms_set - aorc_set)
-    if only_aorc:
-        print(
-            f"  {len(only_aorc)} catchments in AORC but not MRMS (dropped): "
-            f"{only_aorc[:5]}{'...' if len(only_aorc) > 5 else ''}",
-        )
-    if only_mrms:
-        print(
-            f"  {len(only_mrms)} catchments in MRMS but not AORC (dropped): "
-            f"{only_mrms[:5]}{'...' if len(only_mrms) > 5 else ''}",
-        )
-    aorc_cat_idx = {c: i for i, c in enumerate(aorc_cats)}
-    mrms_cat_idx = {c: i for i, c in enumerate(mrms_cats)}
-    aorc_ci = np.array([aorc_cat_idx[c] for c in common])
-    mrms_ci = np.array([mrms_cat_idx[c] for c in common])
-    n_catchments = len(common)
-    print(
-        f"Catchments: {n_catchments} common "
-        f"(AORC: {len(aorc_cats)}, MRMS: {len(mrms_cats)})",
-    )
-
-    # figure out max_steps (both sources are nominally 480, take the max)
+    # figure out max_steps (both sources are nominally the same, take the max)
     aorc_max = nc_aorc.dimensions['time_step'].size
     mrms_max = nc_mrms.dimensions['time_step'].size
     max_steps = max(aorc_max, mrms_max)
-    print(f"time_step dim: AORC {aorc_max}, MRMS {mrms_max} -> output {max_steps}")
+    log.info(
+        'time_step dim: AORC %d, MRMS %d -> output %d',
+        aorc_max,
+        mrms_max,
+        max_steps,
+    )
 
-    # read n_steps and event_start from AORC; n_steps from MRMS for crosscheck
     aorc_n_steps = np.array(nc_aorc.variables['n_steps'][:], dtype=np.int32)
     mrms_n_steps = np.array(nc_mrms.variables['n_steps'][:], dtype=np.int32)
     aorc_ts_starts = aorc_ts_start_chk
     aorc_ts_ends = np.array(nc_aorc.variables['ts_end'][:], dtype=np.float64)
-    aorc_lats = np.array(nc_aorc.variables['latitude'][:], dtype=np.float32)
-    aorc_lons = np.array(nc_aorc.variables['longitude'][:], dtype=np.float32)
     aorc_gage_ids = _load_str_var(nc_aorc, 'event_gage_id')
     aorc_divide_ids = _load_str_var(nc_aorc, 'event_divide_id')
 
@@ -216,12 +200,61 @@ def main() -> None:
         mrms_n_steps[mrms_indices],
     )
 
+    # align catchments *per event*: inner join on divide_id, independently
+    # for each matched event -- never union catchments across events, since
+    # that's what makes this scale to many disjoint basins/VPUs.
+    aorc_cat_ptr = nc_aorc.variables['cat_ptr'][:]
+    mrms_cat_ptr = nc_mrms.variables['cat_ptr'][:]
+
+    event_common_cats: list[list[str]] = []
+    event_aorc_idx: list[np.ndarray] = []
+    event_mrms_idx: list[np.ndarray] = []
+    n_only_aorc, n_only_mrms = 0, 0
+
+    for ai, mi in tqdm(
+        zip(aorc_indices, mrms_indices),
+        total=n_events,
+        desc='align catchments',
+    ):
+        a_lo, a_hi = int(aorc_cat_ptr[ai]), int(aorc_cat_ptr[ai + 1])
+        m_lo, m_hi = int(mrms_cat_ptr[mi]), int(mrms_cat_ptr[mi + 1])
+        a_cats = _load_str_var(nc_aorc, 'divide_id', slice(a_lo, a_hi))
+        m_cats = _load_str_var(nc_mrms, 'divide_id', slice(m_lo, m_hi))
+        m_pos = {c: k for k, c in enumerate(m_cats)}
+
+        common, a_idx, m_idx = [], [], []
+        for k, c in enumerate(a_cats):
+            j = m_pos.get(c)
+            if j is not None:
+                common.append(c)
+                a_idx.append(k)
+                m_idx.append(j)
+
+        event_common_cats.append(common)
+        event_aorc_idx.append(np.array(a_idx, dtype=np.int64))
+        event_mrms_idx.append(np.array(m_idx, dtype=np.int64))
+        n_only_aorc += len(a_cats) - len(common)
+        n_only_mrms += len(m_cats) - len(common)
+
+    total_entries = sum(len(c) for c in event_common_cats)
+    if total_entries == 0:
+        sys.exit("No common catchments between AORC and MRMS in any matched event.")
+    log.info(
+        'Catchments: %d event-catchment entries after per-event inner join '
+        '(%d AORC-only entries dropped, %d MRMS-only entries dropped, across all '
+        'matched events)',
+        total_entries,
+        n_only_aorc,
+        n_only_mrms,
+    )
+
     # create output
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     nc_out = netCDF4.Dataset(args.output, 'w', format='NETCDF4')
     nc_out.createDimension('event', n_events)
+    nc_out.createDimension('ptr', n_events + 1)
+    nc_out.createDimension('entry', total_entries)
     nc_out.createDimension('time_step', max_steps)
-    nc_out.createDimension('catchment', n_catchments)
 
     v = nc_out.createVariable('event_id', str, ('event',))
     v.long_name = "shared AORC/MRMS event ID"
@@ -233,12 +266,12 @@ def main() -> None:
 
     v = nc_out.createVariable('ts_start', 'f8', ('event',))
     v.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v.long_name = "start of the 5-day timeseries window (from AORC, time step 0)"
+    v.long_name = "start of the timeseries window (from AORC, time step 0)"
     v[:] = aorc_ts_starts[aorc_indices]
 
     v = nc_out.createVariable('ts_end', 'f8', ('event',))
     v.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v.long_name = "end of the 5-day timeseries window (from AORC, time step n_steps-1)"
+    v.long_name = "end of the timeseries window (from AORC, time step n_steps-1)"
     v[:] = aorc_ts_ends[aorc_indices]
 
     v = nc_out.createVariable('event_gage_id', str, ('event',))
@@ -249,75 +282,80 @@ def main() -> None:
     v.long_name = "NextGen catchment ID downstream of this event"
     v[:] = aorc_divide_ids[aorc_indices]
 
-    v = nc_out.createVariable('divide_id', str, ('catchment',))
-    v.long_name = "NextGen catchment ID"
-    v[:] = np.array(common, dtype=object)
+    cat_ptr_out = np.zeros(n_events + 1, dtype=np.int64)
+    cat_ptr_out[1:] = np.cumsum([len(c) for c in event_common_cats])
+    v_ptr = nc_out.createVariable('cat_ptr', 'i8', ('ptr',))
+    v_ptr[:] = cat_ptr_out
 
-    v = nc_out.createVariable('latitude', 'f4', ('catchment',))
-    v.units = 'degrees_north'
-    v.standard_name = 'latitude'
-    v[:] = aorc_lats[aorc_ci]
-
-    v = nc_out.createVariable('longitude', 'f4', ('catchment',))
-    v.units = 'degrees_east'
-    v.standard_name = 'longitude'
-    v[:] = aorc_lons[aorc_ci]
-
-    chunk_e = min(n_events, 16)
-    chunk_c = min(n_catchments, 64)
+    v_cat = nc_out.createVariable('divide_id', str, ('entry',))
+    v_cat.long_name = "NextGen catchment ID"
+    v_lat = nc_out.createVariable('latitude', 'f4', ('entry',))
+    v_lat.units = 'degrees_north'
+    v_lat.standard_name = 'latitude'
+    v_lon = nc_out.createVariable('longitude', 'f4', ('entry',))
+    v_lon.units = 'degrees_east'
+    v_lon.standard_name = 'longitude'
 
     def _make_var(name: str, units: str, long_name: str) -> netCDF4.Variable:
-        """Create a compressed (event, time_step, catchment) float32 variable, pre-filled with NaN."""
+        """Create a compressed (entry, time_step) float32 variable, pre-filled with NaN."""
         nv = nc_out.createVariable(
             name,
             'f4',
-            ('event', 'time_step', 'catchment'),
+            ('entry', 'time_step'),
             fill_value=np.nan,
             zlib=True,
             complevel=args.complevel,
-            chunksizes=(chunk_e, max_steps, chunk_c),
+            chunksizes=(min(total_entries, 4096), max_steps),
         )
         nv.units = units
         nv.long_name = long_name
-        nv.coordinates = "event_id n_steps ts_start ts_end event_gage_id event_divide_id divide_id latitude longitude"
+        nv.coordinates = "event_id n_steps ts_start ts_end event_gage_id event_divide_id cat_ptr divide_id latitude longitude"
         return nv
 
-    # Read every event into plain in-memory arrays, then write each variable
-    # to disk in one bulk call below -- a per-event write straight into a
-    # compressed netCDF chunk forces a decompress/recompress of that chunk
-    # on every call, which dominates runtime once there are thousands of
-    # events (reads from the source files don't have this problem, only
-    # writes into the new compressed output do).
-    P = np.full((n_events, max_steps, n_catchments), np.nan, dtype=np.float32)
-    T = np.full((n_events, max_steps, n_catchments), np.nan, dtype=np.float32)
-    PET = np.full((n_events, max_steps, n_catchments), np.nan, dtype=np.float32)
+    v_p = _make_var('P', "mm [15 min]-1", "MRMS precipitation depth")
+    v_t = _make_var('T', 'degC', "Air temperature at 2 m (interpolated)")
+    v_pet = _make_var(
+        'PET',
+        "mm [15 min]-1",
+        "Penman-Monteith ET0 (15-min, uniform split)",
+    )
 
-    print(f"Reading {n_events} events ...")
+    log.info('Writing %d events ...', n_events)
     for out_i, (ai, mi) in tqdm(
         enumerate(zip(aorc_indices, mrms_indices)),
         total=n_events,
-        desc="Reading events",
+        desc="write events",
     ):
+        lo, hi = int(cat_ptr_out[out_i]), int(cat_ptr_out[out_i + 1])
+        if lo == hi:
+            continue
+        a_lo = int(aorc_cat_ptr[ai])
+        m_lo = int(mrms_cat_ptr[mi])
+        a_rows = a_lo + event_aorc_idx[out_i]
+        m_rows = m_lo + event_mrms_idx[out_i]
         ns = int(out_n_steps[out_i])
-        P[out_i, :ns, :] = nc_mrms.variables['P'][mi, :ns, :][:, mrms_ci]
-        T[out_i, :ns, :] = nc_aorc.variables['T'][ai, :ns, :][:, aorc_ci]
-        PET[out_i, :ns, :] = nc_aorc.variables['PET'][ai, :ns, :][:, aorc_ci]
+
+        v_cat[lo:hi] = np.array(event_common_cats[out_i], dtype=object)
+        v_lat[lo:hi] = nc_aorc.variables['latitude'][a_rows]
+        v_lon[lo:hi] = nc_aorc.variables['longitude'][a_rows]
+
+        p_pad = np.full((hi - lo, max_steps), np.nan, dtype=np.float32)
+        p_pad[:, :ns] = nc_mrms.variables['P'][m_rows, :][:, :ns]
+        v_p[lo:hi, :] = p_pad
+
+        t_pad = np.full((hi - lo, max_steps), np.nan, dtype=np.float32)
+        t_pad[:, :ns] = nc_aorc.variables['T'][a_rows, :][:, :ns]
+        v_t[lo:hi, :] = t_pad
+
+        pet_pad = np.full((hi - lo, max_steps), np.nan, dtype=np.float32)
+        pet_pad[:, :ns] = nc_aorc.variables['PET'][a_rows, :][:, :ns]
+        v_pet[lo:hi, :] = pet_pad
 
     nc_aorc.close()
     nc_mrms.close()
-
-    print("Writing output ...")
-    _make_var('P', "mm [15 min]-1", "MRMS precipitation depth")[:] = P
-    _make_var('T', 'degC', "Air temperature at 2 m (interpolated)")[:] = T
-    _make_var('PET', "mm [15 min]-1", "Penman-Monteith ET0 (15-min, uniform split)")[
-        :
-    ] = PET
-
     nc_out.close()
-    print(f"Done -> {args.output}")
-    print(
-        f"  Shape: ({n_events} events, {max_steps} time_steps, {n_catchments} catchments)",
-    )
+    log.info('Done -> %s', args.output)
+    log.info('%d events, %d event-catchment entries (ragged)', n_events, total_entries)
 
 
 if __name__ == '__main__':

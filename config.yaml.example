@@ -14,3 +14,7 @@ events_csv: /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv
 
 # Cache directory for intermediate files (per-VPU windows, weights, shards).
 cache_dir: /projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess
+
+# USGS discharge download study period.
+study_start: '2020-01-01'
+study_end: '2025-12-31'

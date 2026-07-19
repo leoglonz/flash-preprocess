@@ -8,6 +8,7 @@
 """
 
 import atexit
+import logging
 import multiprocessing
 import os
 import pickle
@@ -33,6 +34,8 @@ from flash_preprocess.utils import get_cell_weights
 _pool = ThreadPool(int(os.environ.get('AORC_S3_THREADS', 64)))
 dask.config.set(pool=_pool)
 atexit.register(_pool.terminate)
+
+log = logging.getLogger('AORC')
 
 
 ### DEFAULTS --------------- #
@@ -121,9 +124,10 @@ def spatial_subset_points(
     """
     rows = flat_cell_ids // _AORC_NCOLS
     cols = flat_cell_ids % _AORC_NCOLS
-    print(
-        f"  Point selection: {len(flat_cell_ids):,} unique pixels "
-        f"(vs {_AORC_NROWS * _AORC_NCOLS:,} full grid)",
+    log.info(
+        'Point selection: %d unique pixels (vs %d full grid)',
+        len(flat_cell_ids),
+        _AORC_NROWS * _AORC_NCOLS,
     )
     row_idx = xr.DataArray(rows, dims='pixel')
     col_idx = xr.DataArray(cols, dims='pixel')
@@ -392,8 +396,12 @@ def build_shards(
         if f.exists():
             continue
         if verbose:
-            print(
-                f"  fetching AORC {year}: {lo} -> {hi} ({len(all_cell_ids):,} pixels)",
+            log.info(
+                'fetching AORC %d: %s -> %s (%d pixels)',
+                year,
+                lo,
+                hi,
+                len(all_cell_ids),
             )
         ds = open_aorc(np.datetime64(lo, 'h'), np.datetime64(hi, 'h'))
         ds = spatial_subset_points(ds, all_cell_ids)[list(variables)]
@@ -457,11 +465,25 @@ def _create_output_nc(
     meta: dict,
     data_vars: dict,
 ) -> netCDF4.Dataset:
+    """Create a ragged (CSR) per-event output NetCDF.
+
+    Every event in a single extract_all() run shares this VPU's full basin
+    list (``meta['station_ids']``) -- real values for every basin, not
+    padding -- but the CSR layout (entries laid out event-major, cat_ptr[i]
+    to cat_ptr[i+1] == n_basins for every event) is used from the start so
+    this file has the same schema downstream code (merge_15min.py,
+    _merge_event_parts) expects, whether or not it's ever run through a
+    multi-VPU merge. See flash_preprocess.mrms.extract_all for the same
+    scheme on the MRMS side, where it matters for a different reason (there,
+    each event's own catchment list is a genuine small subset).
+    """
     n_basins = meta['n_basins']
+    n_entries = n_events * n_basins
     nc = netCDF4.Dataset(path, 'w', format='NETCDF4')
     nc.createDimension('event', n_events)
+    nc.createDimension('ptr', n_events + 1)
+    nc.createDimension('entry', n_entries)
     nc.createDimension('time_step', max_steps)
-    nc.createDimension('catchment', n_basins)
 
     nc.createVariable('event_id', str, ('event',))
     nc.createVariable('n_steps', 'i4', ('event',))
@@ -472,26 +494,35 @@ def _create_output_nc(
     nc.createVariable('event_gage_id', str, ('event',))
     nc.createVariable('event_divide_id', str, ('event',))
 
-    v = nc.createVariable('divide_id', str, ('catchment',))
-    v[:] = np.array(meta['station_ids'], dtype=object)
-    v = nc.createVariable('latitude', 'f4', ('catchment',))
-    v[:] = meta['cat_lats']
-    v = nc.createVariable('longitude', 'f4', ('catchment',))
-    v[:] = meta['cat_lons']
+    cat_ptr = n_basins * np.arange(n_events + 1, dtype=np.int64)
+    nc.createVariable('cat_ptr', 'i8', ('ptr',))[:] = cat_ptr
 
-    chunk_e, chunk_c = min(n_events, 16), min(n_basins, 64)
+    v = nc.createVariable('divide_id', str, ('entry',))
+    v[:] = np.tile(np.array(meta['station_ids'], dtype=object), n_events)
+    v = nc.createVariable('latitude', 'f4', ('entry',))
+    v[:] = np.tile(meta['cat_lats'], n_events)
+    v = nc.createVariable('longitude', 'f4', ('entry',))
+    v[:] = np.tile(meta['cat_lons'], n_events)
+
+    chunk_e = min(n_entries, 4096)
     for vname, (units, long_name) in data_vars.items():
         nv = nc.createVariable(
             vname,
             'f4',
-            ('event', 'time_step', 'catchment'),
+            ('entry', 'time_step'),
             fill_value=np.nan,
             zlib=True,
             complevel=4,
-            chunksizes=(chunk_e, max_steps, chunk_c),
+            chunksizes=(chunk_e, max_steps),
         )
         nv.units, nv.long_name = units, long_name
     return nc
+
+
+def _write_dense_as_csr(nc: netCDF4.Dataset, vname: str, dense: np.ndarray) -> None:
+    """Write a (event, time_step, basin) array into a CSR (entry, time_step) variable."""
+    n_ev, ns, n_basins = dense.shape
+    nc.variables[vname][:] = dense.transpose(0, 2, 1).reshape(n_ev * n_basins, ns)
 
 
 def _catchment_metadata(ds: xr.Dataset, weight_idx: dict):
@@ -653,9 +684,9 @@ def extract_all(
     nc_hr.variables['ts_end'][:] = ts_end_hr
     nc_hr.variables['event_gage_id'][:] = gage_ids
     nc_hr.variables['event_divide_id'][:] = divide_ids_out
-    nc_hr.variables['P'][:] = P_ant
-    nc_hr.variables['T'][:] = T_ant
-    nc_hr.variables['PET'][:] = PET_ant
+    _write_dense_as_csr(nc_hr, 'P', P_ant)
+    _write_dense_as_csr(nc_hr, 'T', T_ant)
+    _write_dense_as_csr(nc_hr, 'PET', PET_ant)
     nc_hr.close()
 
     nc_15 = _create_output_nc(
@@ -674,8 +705,8 @@ def extract_all(
     nc_15.variables['ts_end'][:] = ts_end_15
     nc_15.variables['event_gage_id'][:] = gage_ids
     nc_15.variables['event_divide_id'][:] = divide_ids_out
-    nc_15.variables['T'][:] = T_15
-    nc_15.variables['PET'][:] = PET_15
+    _write_dense_as_csr(nc_15, 'T', T_15)
+    _write_dense_as_csr(nc_15, 'PET', PET_15)
     nc_15.close()
 
     if skipped:
@@ -683,12 +714,18 @@ def extract_all(
             Path(out_hr_nc).with_name('extraction_skipped_events.csv'),
             index=False,
         )
-        print(
-            f"WARNING: {len(skipped)} / {n_events} events skipped (incomplete shard coverage) -- "
-            f"logged to extraction_skipped_events.csv",
+        log.warning(
+            '%d / %d events skipped (incomplete shard coverage) -- logged to '
+            'extraction_skipped_events.csv',
+            len(skipped),
+            n_events,
         )
-    print(
-        f"wrote {out_hr_nc.name} and {out_15min_nc.name}: {n_events - len(skipped)} events x {n_basins} catchments",
+    log.info(
+        'wrote %s and %s: %d events x %d catchments',
+        out_hr_nc.name,
+        out_15min_nc.name,
+        n_events - len(skipped),
+        n_basins,
     )
 
 
@@ -696,85 +733,98 @@ def extract_all(
 
 
 def _merge_event_parts(part_paths, out_nc, data_vars: dict):
-    parts = [xr.open_dataset(p, decode_times=False) for p in part_paths]
-    all_cats = sorted(
-        set().union(*[set(p['divide_id'].values.tolist()) for p in parts]),
-    )
-    cat_idx = {c: j for j, c in enumerate(all_cats)}
-    max_steps = max(p.sizes['time_step'] for p in parts)
-    n_ev, n_cat = sum(p.sizes['event'] for p in parts), len(all_cats)
+    """Concatenate ragged (CSR) per-event AORC part files into out_nc.
 
-    # Assemble full in-memory arrays and write each variable in one bulk
-    # call
-    lat_out = np.full(n_cat, np.nan, dtype=np.float32)
-    lon_out = np.full(n_cat, np.nan, dtype=np.float32)
-    event_ids = np.empty(n_ev, dtype=object)
-    gage_ids = np.empty(n_ev, dtype=object)
-    divide_ids_out = np.empty(n_ev, dtype=object)
-    n_steps = np.zeros(n_ev, dtype=np.int32)
-    ts_start = np.zeros(n_ev, dtype=np.float64)
-    ts_end = np.zeros(n_ev, dtype=np.float64)
-    arrays = {
-        name: np.full((n_ev, max_steps, n_cat), np.nan, dtype=np.float32)
-        for name in data_vars
-    }
+    extract_all() already writes each part in CSR form (see
+    _create_output_nc): every event's own entries list that part/VPU's full
+    catchment set, but there's no catchment axis shared *across* parts. This
+    is therefore a straight concatenation along event/entry space, same as
+    flash_preprocess.mrms.merge_parts -- streamed part-by-part so peak memory
+    is bounded by the single largest part, not the sum of every VPU's
+    catchments x every VPU's events (the old dense-union behaviour).
+    """
+    part_paths = list(part_paths)
+    ncs = [netCDF4.Dataset(p, 'r') for p in part_paths]
 
-    i = 0
-    for p in parts:
-        cols = np.array([cat_idx[c] for c in p['divide_id'].values.tolist()])
-        lat_out[cols] = p['latitude'].values
-        lon_out[cols] = p['longitude'].values
-        n, ns = p.sizes['event'], p.sizes['time_step']
-        event_ids[i : i + n] = p['event_id'].values
-        gage_ids[i : i + n] = p['event_gage_id'].values
-        divide_ids_out[i : i + n] = p['event_divide_id'].values
-        n_steps[i : i + n] = p['n_steps'].values
-        ts_start[i : i + n] = p['ts_start'].values
-        ts_end[i : i + n] = p['ts_end'].values
-        for name in data_vars:
-            arrays[name][i : i + n, :ns, cols] = p[name].values
-        i += n
-        p.close()
+    n_ev = sum(nc.dimensions['event'].size for nc in ncs)
+    max_steps = max(nc.dimensions['time_step'].size for nc in ncs)
+    total_entries = sum(nc.dimensions['entry'].size for nc in ncs)
 
     Path(out_nc).parent.mkdir(parents=True, exist_ok=True)
-    nc = netCDF4.Dataset(out_nc, 'w', format='NETCDF4')
-    nc.createDimension('event', n_ev)
-    nc.createDimension('time_step', max_steps)
-    nc.createDimension('catchment', n_cat)
+    out = netCDF4.Dataset(out_nc, 'w', format='NETCDF4')
+    out.createDimension('event', n_ev)
+    out.createDimension('ptr', n_ev + 1)
+    out.createDimension('entry', total_entries)
+    out.createDimension('time_step', max_steps)
 
-    nc.createVariable('event_id', str, ('event',))[:] = event_ids
-    nc.createVariable('n_steps', 'i4', ('event',))[:] = n_steps
-    v_ts = nc.createVariable('ts_start', 'f8', ('event',))
+    v_eid = out.createVariable('event_id', str, ('event',))
+    v_ns = out.createVariable('n_steps', 'i4', ('event',))
+    v_ts = out.createVariable('ts_start', 'f8', ('event',))
     v_ts.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v_ts[:] = ts_start
-    v_te = nc.createVariable('ts_end', 'f8', ('event',))
+    v_te = out.createVariable('ts_end', 'f8', ('event',))
     v_te.units = "minutes since 1970-01-01 00:00:00 UTC"
-    v_te[:] = ts_end
-    nc.createVariable('event_gage_id', str, ('event',))[:] = gage_ids
-    nc.createVariable('event_divide_id', str, ('event',))[:] = divide_ids_out
-    nc.createVariable('divide_id', str, ('catchment',))[:] = np.array(
-        all_cats,
-        dtype=object,
-    )
-    nc.createVariable('latitude', 'f4', ('catchment',))[:] = lat_out
-    nc.createVariable('longitude', 'f4', ('catchment',))[:] = lon_out
+    v_gid = out.createVariable('event_gage_id', str, ('event',))
+    v_did = out.createVariable('event_divide_id', str, ('event',))
+    v_ptr = out.createVariable('cat_ptr', 'i8', ('ptr',))
+    v_cat = out.createVariable('divide_id', str, ('entry',))
+    v_lat = out.createVariable('latitude', 'f4', ('entry',))
+    v_lon = out.createVariable('longitude', 'f4', ('entry',))
 
+    v_vars = {}
     for name, (units, long_name) in data_vars.items():
-        nv = nc.createVariable(
+        nv = out.createVariable(
             name,
             'f4',
-            ('event', 'time_step', 'catchment'),
+            ('entry', 'time_step'),
             fill_value=np.nan,
             zlib=True,
             complevel=4,
-            chunksizes=(min(n_ev, 16), max_steps, min(n_cat, 64)),
+            chunksizes=(min(total_entries, 4096), max_steps),
         )
         nv.units, nv.long_name = units, long_name
-        nv[:] = arrays[name]
+        v_vars[name] = nv
 
-    nc.close()
-    print(
-        f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events x {n_cat} catchments",
+    e_off, p_off = 0, 0
+    for nc in tqdm(ncs, desc='merge parts'):
+        n = nc.dimensions['event'].size
+        ne = nc.dimensions['entry'].size
+        ns = nc.dimensions['time_step'].size
+
+        v_eid[e_off : e_off + n] = nc.variables['event_id'][:]
+        v_ns[e_off : e_off + n] = nc.variables['n_steps'][:]
+        v_ts[e_off : e_off + n] = nc.variables['ts_start'][:]
+        v_te[e_off : e_off + n] = nc.variables['ts_end'][:]
+        v_gid[e_off : e_off + n] = nc.variables['event_gage_id'][:]
+        v_did[e_off : e_off + n] = nc.variables['event_divide_id'][:]
+        # Drop each part's own trailing sentinel and rebase onto this
+        # output's running entry offset.
+        v_ptr[e_off : e_off + n] = np.asarray(nc.variables['cat_ptr'][:n]) + p_off
+        v_cat[p_off : p_off + ne] = nc.variables['divide_id'][:]
+        v_lat[p_off : p_off + ne] = nc.variables['latitude'][:]
+        v_lon[p_off : p_off + ne] = nc.variables['longitude'][:]
+
+        for name in data_vars:
+            if ns == max_steps:
+                v_vars[name][p_off : p_off + ne, :] = nc.variables[name][:, :]
+            else:
+                padded = np.full((ne, max_steps), np.nan, dtype=np.float32)
+                padded[:, :ns] = nc.variables[name][:, :]
+                v_vars[name][p_off : p_off + ne, :] = padded
+
+        e_off += n
+        p_off += ne
+        nc.close()
+
+    v_ptr[e_off] = p_off  # final CSR sentinel
+
+    out.close()
+    log.info(
+        'merged %d part(s) -> %s: %d events, %d event-catchment entries '
+        '(ragged, no cross-VPU catchment union)',
+        len(part_paths),
+        out_nc,
+        n_ev,
+        total_entries,
     )
 
 

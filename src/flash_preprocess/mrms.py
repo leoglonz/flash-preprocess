@@ -9,6 +9,7 @@
 """
 
 import gzip
+import logging
 import os
 import pickle
 import tempfile
@@ -51,6 +52,8 @@ from flash_preprocess.utils import build_upstream_graph, expand_upstream
 
 pyproj.network.set_network_enabled(False)
 warnings.filterwarnings('ignore')
+
+log = logging.getLogger('MRMS')
 
 
 ### DEFAULTS --------------- #
@@ -263,7 +266,7 @@ def build_crosswalk(
         parts.append(df)
     crosswalk = pd.concat(parts, ignore_index=True).drop_duplicates('cell_id')
     _atomic_write(lambda p: crosswalk.to_parquet(p, index=False), combined)
-    print(f"crosswalk built in {time.time() - t0:.0f}s: {len(crosswalk):,} cells")
+    log.info('crosswalk built in %.0fs: %d cells', time.time() - t0, len(crosswalk))
     return crosswalk
 
 
@@ -897,7 +900,7 @@ def build_store(
         n0 = len(times)
         times = times.difference(known)
         if verbose and n0 != len(times):
-            print(f"Skipping {n0 - len(times)} timestamps already known missing.")
+            log.info('Skipping %d timestamps already known missing.', n0 - len(times))
 
     by_day = {}
     for t in times:
@@ -914,13 +917,17 @@ def build_store(
     total_todo = sum(len(v) for v in todo_by_day.values())
 
     if verbose:
-        print(
-            f"{len(times)} timestamps across {len(days)} UTC days | "
-            f"{already} already stored, {total_todo} to fetch -> {shard_dir}",
+        log.info(
+            '%d timestamps across %d UTC days | %d already stored, %d to fetch -> %s',
+            len(times),
+            len(days),
+            already,
+            total_todo,
+            shard_dir,
         )
     if total_todo == 0:
         if verbose:
-            print("Nothing to do -- all timestamps already present.")
+            log.info('Nothing to do -- all timestamps already present.')
         return {
             'days': len(days),
             'to_fetch': 0,
@@ -939,7 +946,7 @@ def build_store(
             )
         except Exception as e:  # noqa: BLE001
             if verbose:
-                print(f"AWS unavailable ({e}); Iowa State only.")
+                log.warning('AWS unavailable (%s); Iowa State only.', e)
 
     # Pooled, keep-alive session for the Iowa State fallback
     session = requests.Session()
@@ -971,8 +978,11 @@ def build_store(
             retry_round += 1
             n_retry = sum(len(v) for v in fail_by_day.values())
             if verbose:
-                print(
-                    f"\nRetry {retry_round}/{max_retries}: {n_retry} transient failure(s)...",
+                log.warning(
+                    'Retry %d/%d: %d transient failure(s)...',
+                    retry_round,
+                    max_retries,
+                    n_retry,
                 )
             retry_days = sorted(fail_by_day)
             retry_bar = (
@@ -1039,11 +1049,14 @@ def build_store(
     }
 
     if verbose:
-        print('Done:', summary)
+        log.info('Done: %s', summary)
         if summary['transient_errors']:
-            print(
-                f"  -> {summary['transient_errors']} still failing after {max_retries} retries, "
-                f"logged to {transient_csv} (will retry again next build_store() call).",
+            log.warning(
+                '-> %d still failing after %d retries, logged to %s '
+                '(will retry again next build_store() call).',
+                summary['transient_errors'],
+                max_retries,
+                transient_csv,
             )
     return summary
 
@@ -1214,15 +1227,21 @@ def extract_all(
     if flagged:
         flagged_csv = Path(out_nc).with_name('zero_precip_events.csv')
         pd.DataFrame(flagged).sort_values('ts_start').to_csv(flagged_csv, index=False)
-        print(
-            f"WARNING: {len(flagged)} / {len(records)} events have basin-mean total precip "
-            f"< {zero_precip_threshold_mm} mm over their full window -- logged to {flagged_csv}",
+        log.warning(
+            '%d / %d events have basin-mean total precip < %s mm over their full '
+            'window -- logged to %s',
+            len(flagged),
+            len(records),
+            zero_precip_threshold_mm,
+            flagged_csv,
         )
     if failed:
         failed_csv = Path(out_nc).with_name('extraction_failed_events.csv')
         pd.DataFrame(failed).to_csv(failed_csv, index=False)
-        print(
-            f"WARNING: {len(failed)} events could not be extracted at all -- logged to {failed_csv}",
+        log.warning(
+            '%d events could not be extracted at all -- logged to %s',
+            len(failed),
+            failed_csv,
         )
 
     n_ev = len(records)
@@ -1288,9 +1307,12 @@ def extract_all(
         v_p[lo:hi, :] = block
 
     nc.close()
-    print(
-        f"wrote {out_nc}: {n_ev} events x {max_steps} steps, "
-        f"{total_entries} event-catchment entries (ragged)",
+    log.info(
+        'wrote %s: %d events x %d steps, %d event-catchment entries (ragged)',
+        out_nc,
+        n_ev,
+        max_steps,
+        total_entries,
     )
 
 
@@ -1372,7 +1394,11 @@ def merge_parts(part_paths: Iterable[Path], out_nc: Path) -> None:
     v_ptr[e_off] = p_off  # final CSR sentinel
 
     out.close()
-    print(
-        f"merged {len(part_paths)} part(s) -> {out_nc}: {n_ev} events, "
-        f"{total_entries} event-catchment entries (ragged, no catchment union)",
+    log.info(
+        'merged %d part(s) -> %s: %d events, %d event-catchment entries '
+        '(ragged, no catchment union)',
+        len(part_paths),
+        out_nc,
+        n_ev,
+        total_entries,
     )
