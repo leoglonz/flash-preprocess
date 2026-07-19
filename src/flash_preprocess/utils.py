@@ -10,7 +10,7 @@ from exactextract.raster import NumPyRasterSource
 
 from flash_preprocess.paths import HYDROFABRIC_GPKG
 
-log = logging.getLogger('FlashPreprocessUtils')
+log = logging.getLogger('Utils')
 
 HF_PATH_DEFAULT = str(HYDROFABRIC_GPKG)
 

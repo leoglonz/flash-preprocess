@@ -1,9 +1,4 @@
-"""Per-user local paths, loaded from config.yaml at the repo root.
-
-Copy config.yaml.example to config.yaml and edit it for your own
-machine/account; config.yaml is gitignored so each user's copy stays local.
-Falls back to config.yaml.example if config.yaml doesn't exist yet.
-"""
+"""Per-user local paths, loaded from config.yaml at the repo root."""
 
 from pathlib import Path
 

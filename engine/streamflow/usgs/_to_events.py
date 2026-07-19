@@ -19,8 +19,11 @@ import pandas as pd
 
 log = logging.getLogger('USGS-ToEvents')
 
+
+# CONFIG -------------------------- #
 _EPOCH = pd.Timestamp('1970-01-01', tz='UTC')
 _MIN_TO_NS = 60 * 1_000_000_000  # nanoseconds per minute
+# -------------------------- #
 
 
 def _minutes_to_timestamp(minutes: float) -> pd.Timestamp:
