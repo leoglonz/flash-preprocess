@@ -1,7 +1,10 @@
-"""AORC x HydroFabric pipeline: area-weighted catchment crosswalk, checkpointed
-per-year S3 fetch, and per-event antecedent/event-window extraction to
-aorc_hr.nc / aorc_15min.nc. Orchestrated by engine/forcing/aorc/run_pipeline.py;
-this module holds the library logic (mirrors flash_preprocess.mrms).
+"""AORC + Hydrofabric pipeline.
+
+- area-weighted catchment crosswalk
+- checkpointed per-year S3 fetch
+- per-event antecedent/event-window extraction to aorc_hr.nc / aorc_15min.nc.
+
+@drworm
 """
 
 import atexit
@@ -25,13 +28,13 @@ from tqdm.auto import tqdm
 from flash_preprocess.pet import penman_monteith_pet
 from flash_preprocess.utils import get_cell_weights
 
-# S3 zarr reads are I/O-bound (network latency, not CPU), so this pool can
-# run far larger than the core count. Override via env var if S3 throttles.
+
 _pool = ThreadPool(int(os.environ.get('AORC_S3_THREADS', 64)))
 dask.config.set(pool=_pool)
 atexit.register(_pool.terminate)
 
 
+### DEFAULTS --------------- #
 VARIABLE_LIST = [
     "APCP_surface",
     "DSWRF_surface",
@@ -43,10 +46,22 @@ VARIABLE_LIST = [
     "VGRD_10maboveground",
 ]
 
+# Accumulated (uniform split to 15-min) vs. instantaneous (linear interp)
 ACCUM_VARS = {"APCP_surface"}
 
-AORC_NCOLS = 8401  # full CONUS grid width, constant across all years
-_AORC_NCOLS = AORC_NCOLS  # kept for internal call sites
+# Hourly warmup window preceding each event's sub-hourly window (default: 6d).
+ANTECEDENT_DAYS = 30.0
+
+_EPOCH = np.datetime64("1970-01-01T00:00", "m")
+_AORC_NCOLS = 8401  # CONUS grid width
+_AORC_NROWS = 4201
+_AORC_LAT0 = 20.0  # southernmost latitude
+_AORC_LON0 = -130.0  # westernmost longitude
+_AORC_DLAT = 1.0 / 120.0  # ~0.008333 deg (~1 km)
+
+# Below this, one exact_extract call beats worker overhead
+_WEIGHT_PARALLEL_THRESHOLD = 500
+# -------------------------- #
 
 
 def open_aorc(start: np.datetime64, end: np.datetime64) -> xr.Dataset:
@@ -94,7 +109,7 @@ def spatial_subset_points(
     ds
         AORC dataset, dims (time, latitude, longitude).
     flat_cell_ids
-        1D array of *unique* full-grid flat cell indices (row * 8401 + col)
+        1D array of *unique* full-grid flat cell indices (row * _AORC_NCOLS + col)
         actually needed, in the desired output order.
 
     Returns
@@ -107,7 +122,7 @@ def spatial_subset_points(
     cols = flat_cell_ids % _AORC_NCOLS
     print(
         f"  Point selection: {len(flat_cell_ids):,} unique pixels "
-        f"(vs {4201 * 8401:,} full grid)",
+        f"(vs {_AORC_NROWS * _AORC_NCOLS:,} full grid)",
     )
     row_idx = xr.DataArray(rows, dims="pixel")
     col_idx = xr.DataArray(cols, dims="pixel")
@@ -244,34 +259,29 @@ def _atomic_write(write_fn, path):
     os.replace(tmp, path)
 
 
-ANTECEDENT_DAYS = 30.0  # hourly warmup window preceding each event's 5-day window
-_EPOCH = np.datetime64("1970-01-01T00:00", "m")
-
-
 def _mins(t) -> float:
     return float((np.datetime64(t) - _EPOCH) / np.timedelta64(1, "m"))
 
 
-# ── AORC 1km grid geometry + area-weighted catchment crosswalk ─────────────
-
-AORC_NROWS = 4201
-AORC_LAT0 = 20.0  # southernmost latitude
-AORC_LON0 = -130.0  # westernmost longitude
-AORC_DLAT = 1.0 / 120.0  # ~0.008333 deg (~1 km)
-
-_WEIGHT_PARALLEL_THRESHOLD = (
-    500  # below this, a single exact_extract call beats worker-spawn overhead
-)
+#### AORC 1km grid geometry + area-weighted catchment crosswalk
 
 
 def build_aorc_grid() -> xr.Dataset:
     """AORC 1km grid geometry, identical every year (1979-2025). Latitude
     descending (row 0 = ~55N) to match the flat cell_id convention used
-    throughout this module (cell_id = row * AORC_NCOLS + col).
+    throughout this module (cell_id = row * _AORC_NCOLS + col).
     """
-    lat = np.linspace(AORC_LAT0 + (AORC_NROWS - 1) * AORC_DLAT, AORC_LAT0, AORC_NROWS)
-    lon = np.linspace(AORC_LON0, AORC_LON0 + (AORC_NCOLS - 1) * AORC_DLAT, AORC_NCOLS)
-    dummy = np.zeros((AORC_NROWS, AORC_NCOLS), dtype=np.float32)
+    lat = np.linspace(
+        _AORC_LAT0 + (_AORC_NROWS - 1) * _AORC_DLAT,
+        _AORC_LAT0,
+        _AORC_NROWS,
+    )
+    lon = np.linspace(
+        _AORC_LON0,
+        _AORC_LON0 + (_AORC_NCOLS - 1) * _AORC_DLAT,
+        _AORC_NCOLS,
+    )
+    dummy = np.zeros((_AORC_NROWS, _AORC_NCOLS), dtype=np.float32)
     return xr.Dataset({"dummy": (["y", "x"], dummy)}, coords={"y": lat, "x": lon})
 
 
@@ -337,7 +347,7 @@ def build_weighted_crosswalk(
     return idx
 
 
-# ── checkpointed per-year S3 fetch ──────────────────────────────────────────
+#### checkpointed per-year S3 fetch
 
 
 def _year_bounds(manifest: pd.DataFrame, antecedent_days: float) -> dict:
@@ -436,7 +446,7 @@ def open_shards(shard_dir: Path) -> xr.Dataset:
     ).sortby("time")
 
 
-# ── per-event extraction: antecedent hourly window + 5-day 15-min window ───
+#### per-event extraction: antecedent hourly window + 5-day 15-min window
 
 
 def _create_output_nc(
@@ -681,7 +691,7 @@ def extract_all(
     )
 
 
-# ── merge per-VPU part files into one combined NetCDF ───────────────────────
+#### merge per-VPU part files into one combined NetCDF
 
 
 def _merge_event_parts(part_paths, out_nc, data_vars: dict):
@@ -694,10 +704,7 @@ def _merge_event_parts(part_paths, out_nc, data_vars: dict):
     n_ev, n_cat = sum(p.sizes["event"] for p in parts), len(all_cats)
 
     # Assemble full in-memory arrays and write each variable in one bulk
-    # call below -- writing part-by-part, event-by-event straight into a
-    # compressed netCDF variable (the previous approach) forces a
-    # decompress/recompress of the touched chunk on every call, which
-    # dominates runtime once there are thousands of events.
+    # call
     lat_out = np.full(n_cat, np.nan, dtype=np.float32)
     lon_out = np.full(n_cat, np.nan, dtype=np.float32)
     event_ids = np.empty(n_ev, dtype=object)

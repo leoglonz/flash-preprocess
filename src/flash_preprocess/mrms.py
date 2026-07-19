@@ -1,11 +1,9 @@
-"""MRMS + HydroFabric pipeline.
+"""MRMS + Hydrofabric pipeline.
 
 - CONUS cell/catchment crosswalk
 - per-event upstream catchments
 - raw MRMS PrecipRate download
 - area-weighted 2-min -> 15-min catchment precipitation extraction.
-
-Orchestrated by engine/forcing/mrms/run_pipeline.py.
 
 @drworm
 """
@@ -75,6 +73,10 @@ HF_LAYERS = [
     "is_terminal",
     "geometry",
 ]
+
+_CONFIRMED_MISSING = object()  # Precip missing in AWS + Iowa State
+_AWS_RETRIES = 2  # Extra AWS attempts before fallback to Iowa State
+_AWS_BACKOFF_S = 0.25  # Buffer between AWS retries (attempt * backoff)
 # -------------------------- #
 
 
@@ -582,12 +584,6 @@ def _paths(ts: pd.Timestamp):
         f"PrecipRate/PrecipRate_00.00_{d}-{hms}.grib2.gz"
     )
     return aws, isu
-
-
-_CONFIRMED_MISSING = object()  # absent in BOTH archives (real gap), not a hiccup
-
-_AWS_RETRIES = 2  # extra attempts on AWS before falling back to Iowa State
-_AWS_BACKOFF_S = 0.25  # base backoff between AWS retries (linear: attempt * backoff)
 
 
 def _fetch_bytes(ts, fs, session=None):
