@@ -1,17 +1,6 @@
 r"""Rewrite an event-indexed forcing NetCDF without zlib compression.
 
-FlashHydroLoader eager-loads these files fully into memory on every process
-start (to avoid per-event HDF5 lock contention during training/eval). For
-zlib-compressed files that means paying single-threaded decompression cost
-on every run -- HDF5's global lock prevents parallelizing it across threads,
-even though the underlying disk I/O is essentially free (a raw read of a
-multi-GB file completes in under a second on GPFS here). Stripping
-compression trades disk space for a ~30-60x reduction in per-run load time.
-
-Usage
------
-    python engine/forcing/strip_compression.py \\
-        --input /path/to/aorc_hr.nc --output /path/to/aorc_hr_uncompressed.nc
+Stripping compression trades disk space for a ~30-60x reduction in per-run time.
 """
 
 import argparse

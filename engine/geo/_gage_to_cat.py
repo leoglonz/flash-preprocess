@@ -9,6 +9,9 @@ that only carry STAID + lat/lon and no longer carry gage_cat-id directly.
 The output CSV can be fed straight into extract_hf.py via
 `--csv-column gage_cat-id`.
 
+Edit the CONFIG block at the top of this file to set all options, or
+override per-invocation via CLI flags (see below).
+
 Usage
 -----
     python engine/geo/assign_gage_catchment.py \\
@@ -25,9 +28,25 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
-from flash_preprocess.paths import HYDROFABRIC_GPKG
+from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
+from flash_preprocess.paths import HYDROFABRIC_GPKG as _HYDROFABRIC_GPKG
 
-log = logging.getLogger('AssignGageCatchment')
+log = logging.getLogger('Gage-ToCat')
+
+
+# CONFIG -------------------------- #
+# CSV with gage STAID + lat/lon
+CSV_PATH = _EVENTS_CSV
+STAID_COL = 'STAID'
+LAT_COL = 'gage_lat'
+LON_COL = 'gage_lon'
+
+# Hydrofabric GeoPackage path
+GPKG = _HYDROFABRIC_GPKG
+
+# Output CSV path (CSV_PATH plus a gage_cat-id column).
+OUTPUT_CSV = CSV_PATH.parent / 'events_with_cat_id.csv'
+# -------------------------- #
 
 
 def read_hydrofabric(hydrofabric_gpkg: str) -> tuple[pd.DataFrame, gpd.GeoDataFrame]:
@@ -95,10 +114,8 @@ def assign_gage_catchments(
     return pd.DataFrame(snapped.drop(columns=['geometry'], errors='ignore'))
 
 
-def main():
-    """Parse CLI args and run gage-to-catchment assignment."""
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
-
+def parse_args():
+    """Parse command-line overrides for the CONFIG block above."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -106,32 +123,43 @@ def main():
     parser.add_argument(
         '--csv',
         type=Path,
-        required=True,
-        help='CSV with gage STAID + lat/lon',
+        default=CSV_PATH,
+        help='CSV with gage STAID + lat/lon (default: %(default)s)',
     )
     parser.add_argument(
         '--gpkg',
         type=Path,
-        default=HYDROFABRIC_GPKG,
+        default=GPKG,
         help='Path to conus_nextgen.gpkg (default: config.yaml hydrofabric_gpkg)',
     )
     parser.add_argument(
         '--staid-col',
-        default='STAID',
+        default=STAID_COL,
         help='STAID column name (default: %(default)s)',
     )
     parser.add_argument(
         '--lat-col',
-        default='gage_lat',
+        default=LAT_COL,
         help='Latitude column name (default: %(default)s)',
     )
     parser.add_argument(
         '--lon-col',
-        default='gage_lon',
+        default=LON_COL,
         help='Longitude column name (default: %(default)s)',
     )
-    parser.add_argument('--output', type=Path, required=True, help='Output CSV path')
-    args = parser.parse_args()
+    parser.add_argument(
+        '--output',
+        type=Path,
+        default=OUTPUT_CSV,
+        help='Output CSV path (default: %(default)s)',
+    )
+    return parser.parse_args()
+
+
+def gage_to_cat():
+    """Run gage-to-catchment assignment."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    args = parse_args()
 
     gages = pd.read_csv(args.csv, dtype={args.staid_col: str}, low_memory=False)
     network, flowpaths = read_hydrofabric(str(args.gpkg))
@@ -151,4 +179,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    gage_to_cat()
