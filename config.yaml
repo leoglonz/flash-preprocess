@@ -2,13 +2,13 @@
 
 # 1. Hydrofabric GeoPackage path.
 #   AWS Download: s3://communityhydrofabric/hydrofabrics/community/conus_nextgen.tar.gz
-hydrofabric_gpkg: /projects/mhpi/leoglonz/sub_hourly/data/conus_nextgen.gpkg
+hydrofabric_gpkg: /gpfs/leoglonz/sub_hourly/data/conus_nextgen.gpkg
 
 # 2. Flash flood event registry path.
-events_csv: /projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv
+events_csv: /gpfs/leoglonz/sub_hourly/data/3-huc8/events.csv
 
 # 3. Cache directory for intermediate files.
-cache_dir: /projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess
+cache_dir: /gpfs/leoglonz/sub_hourly/data/3-huc8/cache
 
 # 4. USGS discharge download window.
 study_start: '2020-01-01'

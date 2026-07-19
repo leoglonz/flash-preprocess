@@ -1,24 +1,11 @@
 r"""Assign hydrofabric catchment (divide) IDs to USGS gages by lat/lon.
 
-Snaps each gage point to the nearest hydrofabric flowpath and maps that
-flowpath to its containing divide, adding a `gage_cat-id` column
-(cat-XXXXX) to the input CSV. This is the same snap-to-flowpath logic
-used in event_pipeline.py (read_and_snap_gages), reused here for CSVs
-that only carry STAID + lat/lon and no longer carry gage_cat-id directly.
-
-The output CSV can be fed straight into extract_hf.py via
-`--csv-column gage_cat-id`.
+- Snaps each gage point to the nearest hydrofabric flowpath
+- maps flowpath to its containing divide, adding a `gage_cat-id` column
+    (cat-XXXXX) to the input CSV.
 
 Edit the CONFIG block at the top of this file to set all options, or
 override per-invocation via CLI flags (see below).
-
-Usage
------
-    python engine/geo/assign_gage_catchment.py \\
-        --csv /path/to/events.csv \\
-        --gpkg /path/to/conus_nextgen.gpkg \\
-        --staid-col STAID --lat-col gage_lat --lon-col gage_lon \\
-        --output /path/to/events_with_cat_id.csv
 """
 
 import argparse

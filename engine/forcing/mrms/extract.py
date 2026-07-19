@@ -7,6 +7,8 @@ Outputs:
 
 Edit the CONFIG block at the top of this file to set all options, or
 override per-invocation via CLI flags (see below).
+
+@drworm
 """
 
 import argparse
@@ -47,8 +49,7 @@ VPU_SUBSET = None
 #   Else, disables end-of-run auto-merge.
 TAG_SUFFIX = ''
 
-# Where to cache per-VPU windows, timesteps, and NetCDF shards. Base cache
-# root is centralized in config.yaml (see flash_preprocess.paths.CACHE_DIR).
+# Where to cache per-VPU windows, timesteps, and NetCDF shards. 
 CACHE_DIR = _CACHE_DIR
 
 # Output NetCDF path for merged 15-min MRMS precipitation.
@@ -119,9 +120,6 @@ def mrms_extract():
     catchments_master, network, flowpaths, nexus = load_hydrofabric(cache_dir)
     log.info('hydrofabric: %d catchments', len(catchments_master))
 
-    crosswalk = build_crosswalk(catchments_master, cache_dir)
-    log.info('crosswalk: %d MRMS cells', len(crosswalk))
-
     events = pd.read_csv(events_csv, dtype={'STAID': str})
     if EVENT_IDS is not None:
         events = events[events['event_id'].isin(EVENT_IDS)]
@@ -140,6 +138,9 @@ def mrms_extract():
     )
     log.info("window: %s day(s) centered on '%s'", window_days, centroid)
 
+    crosswalk = build_crosswalk(catchments_master, cache_dir, vpus=vpus)
+    log.info('crosswalk: %d MRMS cells', len(crosswalk))
+
     # 15-min steps in a window_days-wide window, + small buffer for the
     # outward 15-min-grid rounding in build_manifest.
     max_steps = int(round(window_days * 24 * 60 / 15)) + 1
@@ -149,7 +150,7 @@ def mrms_extract():
         vpu_tag = f'{vpu}{tag_suffix}'
         log.info('=== VPU %s  (tag: %s) ===', vpu, vpu_tag)
         vpu_events = events[events['vpuid'] == vpu]
-        vpu_dir = cache_dir / 'vpu_runs' / vpu_tag
+        vpu_dir = cache_dir / 'mrms_runs' / vpu_tag
 
         if fresh_start:
             f_manifest = cache_dir / f'manifest_out_{vpu_tag}.parquet'
@@ -159,6 +160,17 @@ def mrms_extract():
             if vpu_dir.exists():
                 shutil.rmtree(vpu_dir)
             log.info('FRESH_START: cleared manifest cache and %s', vpu_dir)
+
+        part_nc = vpu_dir / 'mrms_15min_part.nc'
+        if not fresh_start and part_nc.exists():
+            log.info(
+                '%s already exists -- skipping manifest/download/extract for VPU %s '
+                '(use --fresh-start to force a rebuild).',
+                part_nc,
+                vpu_tag,
+            )
+            part_ncs.append(part_nc)
+            continue
 
         manifest, event_catchment_windows = build_manifest(
             vpu_events,
@@ -223,7 +235,6 @@ def mrms_extract():
         )
         log.info('fractional crosswalk: %d cell/catchment pairs', len(frac_cw))
 
-        part_nc = vpu_dir / 'mrms_15min_part.nc'
         extract_all(
             manifest,
             event_catchment_windows,

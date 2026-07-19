@@ -1,8 +1,9 @@
 """Split an events CSV into N ~equal shards for parallel MRMS downloading.
 
-Run:
-    python engine/forcing/mrms/split_events_shards.py \
-        --events-csv /path/to/events.csv --n-shards 10 --out-dir /path/to/
+Edit the CONFIG block at the top of this file to set all options, or
+override per-invocation via CLI flags (see below).
+
+@drworm
 """
 
 import argparse
@@ -12,22 +13,42 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
+
 log = logging.getLogger('MRMS-Shard')
 
 
-def main() -> None:
-    """Split an events CSV into N time-contiguous shards."""
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+# CONFIG -------------------------- #
+# Events CSV to split
+EVENTS_CSV = _EVENTS_CSV
+
+# Number of shards to split EVENTS_CSV into.
+N_SHARDS = 8
+
+# Output directory for the shard CSVs.
+#   None -- defaults to EVENTS_CSV's own directory.
+OUT_DIR = _EVENTS_CSV.parent / 'cache' / 'event_shards'
+# -------------------------- #
+
+
+def parse_args():
+    """Parse command-line overrides for the CONFIG block above."""
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--events-csv', type=Path, required=True)
-    ap.add_argument('--n-shards', type=int, required=True)
+    ap.add_argument('--events-csv', type=Path, default=EVENTS_CSV)
+    ap.add_argument('--n-shards', type=int, default=N_SHARDS)
     ap.add_argument(
         '--out-dir',
         type=Path,
-        default=None,
+        default=OUT_DIR,
         help="Defaults to --events-csv's own directory.",
     )
-    args = ap.parse_args()
+    return ap.parse_args()
+
+
+def mrms_shard() -> None:
+    """Split an events CSV into N time-contiguous shards."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    args = parse_args()
 
     out_dir = args.out_dir or args.events_csv.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -53,4 +74,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    mrms_shard()

@@ -17,7 +17,8 @@ import time
 import urllib.error
 import urllib.request
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
 from concurrent.futures import wait as _futures_wait
 from pathlib import Path
@@ -84,7 +85,7 @@ _AWS_BACKOFF_S = 0.25  # Buffer between AWS retries (attempt * backoff)
 # -------------------------- #
 
 
-def _atomic_write(write_fn, path):
+def _atomic_write(write_fn: Callable[[str], None], path: str | Path) -> None:
     """write_fn(tmp_path) then atomic rename -- avoids a torn file if a
     concurrent VPU run races to build the same shared cache entry.
     """
@@ -148,13 +149,15 @@ def load_hydrofabric(
     TERMINAL_WB = 'wb-0'
     terminal_cache = {}
 
-    def _down_nexus(n):
+    def _down_nexus(n: str) -> str | None:
+        """Next nexus id downstream of n, or None at the terminal waterbody."""
         wb = nexus_next.get(n)
         if wb is None or wb == TERMINAL_WB:
             return None
         return wb_next.get(wb)
 
-    def terminal_of(start):
+    def terminal_of(start: str) -> str:
+        """Walk downstream from `start` to its terminal nexus id, with memoization."""
         path, cur, seen = [], start, set()
         while cur is not None and cur not in terminal_cache:
             if cur in seen:
@@ -225,18 +228,17 @@ def mrms_centers_for_bbox(
 def build_crosswalk(
     catchments_master: gpd.GeoDataFrame,
     cache_dir: Path,
+    vpus: Iterable[str] | None = None,
 ) -> pd.DataFrame:
-    """Build (or load cached) CONUS-wide MRMS cell-to-catchment crosswalk."""
+    """Build (or load cached) MRMS cell-to-catchment crosswalk."""
     cache_dir = Path(cache_dir)
-    combined = cache_dir / 'mrms_hf_crosswalk_conus.parquet'
-    if combined.exists():
-        return pd.read_parquet(combined)
-
     cache_dir.mkdir(parents=True, exist_ok=True)
-    vpus = sorted(catchments_master['vpuid'].dropna().unique())
+    target_vpus = sorted(vpus) if vpus is not None else sorted(
+        catchments_master['vpuid'].dropna().unique(),
+    )
     parts = []
     t0 = time.time()
-    for vpu in vpus:
+    for vpu in target_vpus:
         out = cache_dir / f'crosswalk_vpu_{vpu}.parquet'
         if out.exists():
             parts.append(pd.read_parquet(out))
@@ -265,8 +267,12 @@ def build_crosswalk(
         _atomic_write(lambda p, df=df: df.to_parquet(p, index=False), out)
         parts.append(df)
     crosswalk = pd.concat(parts, ignore_index=True).drop_duplicates('cell_id')
-    _atomic_write(lambda p: crosswalk.to_parquet(p, index=False), combined)
-    log.info('crosswalk built in %.0fs: %d cells', time.time() - t0, len(crosswalk))
+    log.info(
+        'crosswalk built/loaded in %.0fs: %d cells across %d VPU(s)',
+        time.time() - t0,
+        len(crosswalk),
+        len(target_vpus),
+    )
     return crosswalk
 
 
@@ -274,6 +280,7 @@ def build_crosswalk(
 
 
 def _upstream_graph(cache_dir: Path) -> dict:
+    """Build (or load cached) the CONUS upstream-catchment graph."""
     f = Path(cache_dir) / 'upstream_graph.pkl'
     if f.exists():
         return pickle.loads(f.read_bytes())
@@ -317,7 +324,8 @@ def build_manifest(
     graph = _upstream_graph(cache_dir)
     upstream_cache: dict[str, set] = {}
 
-    def upstream_cats_of(cat_id):
+    def upstream_cats_of(cat_id: str) -> set:
+        """Upstream catchment ids of cat_id, cached across calls."""
         if cat_id not in upstream_cache:
             upstream_cache[cat_id] = expand_upstream({cat_id}, graph)
         return upstream_cache[cat_id]
@@ -383,19 +391,23 @@ def build_manifest(
 #### fractional (area-weighted) MRMS-cell -> catchment crosswalk
 
 
-def _lon_from_col(col):
+def _lon_from_col(col: np.ndarray) -> np.ndarray:
+    """MRMS grid column index -> cell-center longitude."""
     return MRMS_LON_MIN_EDGE + HALF + col * MRMS_RES
 
 
-def _lat_from_row(row):
+def _lat_from_row(row: np.ndarray) -> np.ndarray:
+    """MRMS grid row index -> cell-center latitude."""
     return MRMS_LAT_MAX_EDGE - HALF - row * MRMS_RES
 
 
-def _cell_id(row, col):
+def _cell_id(row: np.ndarray, col: np.ndarray) -> np.ndarray:
+    """Flatten (row, col) grid indices into a single MRMS cell id."""
     return row.astype(np.int64) * MRMS_NLON + col.astype(np.int64)
 
 
-def _mrms_cell_polys(rows, cols):
+def _mrms_cell_polys(rows: np.ndarray, cols: np.ndarray) -> gpd.GeoDataFrame:
+    """Build square cell polygons (area CRS) for the given grid row/col indices."""
     rows, cols = np.asarray(rows, dtype=np.int32), np.asarray(cols, dtype=np.int32)
     lon, lat = _lon_from_col(cols), _lat_from_row(rows)
     gdf = gpd.GeoDataFrame(
@@ -416,7 +428,10 @@ def _mrms_cell_polys(rows, cols):
     return gdf
 
 
-def _rows_cols_for_bbox(west, south, east, north, pad=2):
+def _rows_cols_for_bbox(
+    west: float, south: float, east: float, north: float, pad: int = 2,
+) -> pd.DataFrame:
+    """All MRMS grid (row, col) pairs covering a bbox, padded by `pad` cells."""
     i0 = max(0, int(np.floor((west - MRMS_LON_MIN_EDGE - HALF) / MRMS_RES)) - pad)
     i1 = min(
         MRMS_NLON - 1,
@@ -435,7 +450,8 @@ def _rows_cols_for_bbox(west, south, east, north, pad=2):
     )
 
 
-def _add_neighbors(df, pad=2):
+def _add_neighbors(df: pd.DataFrame, pad: int = 2) -> pd.DataFrame:
+    """Expand each (row, col) pair in df to include all cells within `pad` steps."""
     base = df[['row', 'col']].drop_duplicates()
     pieces = []
     for dr in range(-pad, pad + 1):
@@ -451,7 +467,8 @@ def _add_neighbors(df, pad=2):
     return out.drop_duplicates().reset_index(drop=True)
 
 
-def _intersection_area(candidates, chunk=150_000):
+def _intersection_area(candidates: gpd.GeoDataFrame, chunk: int = 150_000) -> np.ndarray:
+    """Cell/catchment intersection area (m^2) per row, chunked to bound peak memory."""
     areas = []
     for s in range(0, len(candidates), chunk):
         c = candidates.iloc[s : s + chunk]
@@ -467,9 +484,6 @@ def build_fractional_crosswalk(
     cache_dir: Path,
 ) -> pd.DataFrame:
     """Build (or load cached) per-VPU area-fractional MRMS cell crosswalk."""
-    # No top-level "combined" shortcut cache: this is called once per VPU
-    # group (see run_pipeline.py), so the per-VPU sub-cache below (keyed by
-    # VPU code, collision-free across concurrent VPU runs) already covers it.
     cache_dir = Path(cache_dir)
     sub = (
         catchments_master[catchments_master['divide_id'].isin(divide_ids)]
@@ -586,7 +600,8 @@ def build_fractional_crosswalk(
 #### raw MRMS PrecipRate download (AWS + Iowa State, bbox-subset in memory)
 
 
-def _paths(ts: pd.Timestamp):
+def _paths(ts: pd.Timestamp) -> tuple[str, str]:
+    """(AWS S3 key, Iowa State URL) for one MRMS PrecipRate timestamp."""
     ts = pd.Timestamp(ts)
     d = ts.strftime('%Y%m%d')
     hms = ts.strftime('%H%M%S')
@@ -598,17 +613,10 @@ def _paths(ts: pd.Timestamp):
     return aws, isu
 
 
-def _fetch_bytes(ts, fs, session=None):
-    """Bytes -> raw .grib2.gz; _CONFIRMED_MISSING -> 404 in both archives;
-    None -> transient error (retried by build_store).
-
-    `session` should be a shared, pooled requests.Session (see build_store) --
-    without one, the Iowa State fallback opens a brand-new TCP+TLS connection
-    per file via urllib, which is pure overhead under high concurrency.
-    AWS failures that aren't a confirmed 404 (e.g. anonymous-access
-    throttling, transient network blips) get a couple of quick retries before
-    giving up to the slower Iowa State path, since backoff resolves
-    throttling but immediate fallback doesn't.
+def _fetch_bytes(ts: pd.Timestamp, fs: Any | None, session: requests.Session | None = None) -> Any:
+    """Fetch one timestamp's raw gzipped GRIB2 bytes: AWS first, then Iowa
+    State. Returns None on transient failure, or _CONFIRMED_MISSING if both
+    sources report the file doesn't exist.
     """
     aws_key, isu_url = _paths(ts)
     aws_missing = isu_missing = False
@@ -620,7 +628,7 @@ def _fetch_bytes(ts, fs, session=None):
             except FileNotFoundError:
                 aws_missing = True
                 break
-            except Exception:  # noqa: BLE001
+            except RuntimeError:
                 if attempt < _AWS_RETRIES:
                     time.sleep(_AWS_BACKOFF_S * (attempt + 1))
                 # else: retries exhausted -> fall through to Iowa State
@@ -642,7 +650,7 @@ def _fetch_bytes(ts, fs, session=None):
     except urllib.error.HTTPError as e:
         if e.code == 404:
             isu_missing = True
-    except Exception:  # noqa: BLE001
+    except RuntimeError:
         pass
 
     if aws_missing and isu_missing:
@@ -651,6 +659,7 @@ def _fetch_bytes(ts, fs, session=None):
 
 
 def _decode_precip_eccodes(raw_gz: bytes) -> xr.DataArray:
+    """Decode a gzipped GRIB2 PrecipRate message via eccodes (fast path)."""
     grib = gzip.decompress(raw_gz)
     gid = eccodes.codes_new_from_message(grib)
     try:
@@ -680,6 +689,7 @@ def _decode_precip_eccodes(raw_gz: bytes) -> xr.DataArray:
 
 
 def _decode_precip_cfgrib(raw_gz: bytes) -> xr.DataArray:
+    """Decode a gzipped GRIB2 PrecipRate message via cfgrib (fallback path)."""
     grib = gzip.decompress(raw_gz)
     fd, tmp = tempfile.mkstemp(suffix='.grib2')
     os.close(fd)
@@ -704,6 +714,7 @@ def _decode_precip_cfgrib(raw_gz: bytes) -> xr.DataArray:
 
 
 def _decode_precip(raw_gz: bytes) -> xr.DataArray:
+    """Decode a gzipped GRIB2 PrecipRate message, preferring eccodes."""
     if _HAVE_ECCODES:
         try:
             return _decode_precip_eccodes(raw_gz)
@@ -712,7 +723,12 @@ def _decode_precip(raw_gz: bytes) -> xr.DataArray:
     return _decode_precip_cfgrib(raw_gz)
 
 
-def _subset_bbox(da: xr.DataArray, bbox) -> xr.DataArray:
+def _subset_bbox(
+    da: xr.DataArray, bbox: tuple[float, float, float, float],
+) -> xr.DataArray:
+    """Slice a decoded grid to (lon_min, lat_min, lon_max, lat_max), handling
+    both ascending/descending coordinate order and 0-360 longitude grids.
+    """
     lon_min, lat_min, lon_max, lat_max = bbox
     lon, lat = da['longitude'], da['latitude']
     if float(lon.max()) > 180.0:
@@ -730,7 +746,18 @@ def _subset_bbox(da: xr.DataArray, bbox) -> xr.DataArray:
     return da.sel(latitude=lat_slice, longitude=lon_slice)
 
 
-def _process_one(ts, bbox, fs, mask_negative=True, session=None):
+def _process_one(
+    ts: pd.Timestamp,
+    bbox: tuple[float, float, float, float],
+    fs: Any | None,
+    mask_negative: bool = True,
+    session: requests.Session | None = None,
+) -> tuple[str, pd.Timestamp, xr.DataArray | None]:
+    """Fetch, decode, and bbox-subset one timestamp.
+
+    Returns (status, ts, data) where status is 'ok', 'missing', or 'error'.
+    Never raises -- a malformed/failed timestamp is reported, not fatal.
+    """
     raw = _fetch_bytes(ts, fs, session)
     if raw is _CONFIRMED_MISSING:
         return ('missing', ts, None)
@@ -747,7 +774,8 @@ def _process_one(ts, bbox, fs, mask_negative=True, session=None):
         return ('error', ts, None)
 
 
-def _read_existing(path):
+def _read_existing(path: str) -> tuple[set, xr.DataArray | None]:
+    """Load an existing per-day shard file's timestamps and precip_rate grid."""
     if not os.path.exists(path):
         return set(), None
     try:
@@ -758,7 +786,28 @@ def _read_existing(path):
         return set(), None
 
 
-def _write_day(path, existing_da, new_slices):
+def _read_existing_times(path: str) -> set:
+    """Cheap variant of _read_existing.
+
+    just the set of already-stored timestamps, without loading the (potentially
+    large) precip_rate grid.
+    """
+    if not os.path.exists(path):
+        return set()
+    try:
+        with xr.open_dataset(path) as _ds:
+            return set(pd.to_datetime(_ds['time'].values))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _write_day(
+    path: str, existing_da: xr.DataArray | None, new_slices: list[xr.DataArray],
+) -> int:
+    """Merge existing + newly-fetched slices for one day and write the shard file.
+
+    Returns the total number of stored timestamps.
+    """
     parts = []
     if existing_da is not None:
         parts.append(existing_da)
@@ -782,17 +831,17 @@ def _write_day(path, existing_da, new_slices):
 
 
 def _run_pass(
-    days,
-    todo_by_day,
-    bbox,
-    fs,
-    mask_negative,
-    pool,
-    bar,
-    shard_dir,
-    max_workers,
-    session=None,
-):
+    days: list[pd.Timestamp],
+    todo_by_day: dict[pd.Timestamp, list],
+    bbox: tuple[float, float, float, float],
+    fs: Any | None,
+    mask_negative: bool,
+    pool: ThreadPoolExecutor,
+    bar: tqdm | None,
+    shard_dir: str,
+    max_workers: int,
+    session: requests.Session | None = None,
+) -> tuple[dict, list, dict]:
     """Fetch every (day, timestamp) using one rolling submission window across
     all days so pool continuously saturated across day boundaries.
 
@@ -816,7 +865,8 @@ def _run_pass(
     fut_to_dt: dict = {}
     pending: set = set()
 
-    def _submit_next():
+    def _submit_next() -> None:
+        """Submit the next queued (day, timestamp) fetch, if any remain."""
         item = next(it, None)
         if item is None:
             return
@@ -830,7 +880,8 @@ def _run_pass(
         if not pending:
             break
 
-    def _flush_day(d):
+    def _flush_day(d: pd.Timestamp) -> None:
+        """Write day d's buffered slices to its shard file and record results."""
         path = os.path.join(shard_dir, f'pr_{d:%Y%m%d}.nc')
         _, existing_da = _read_existing(path)
         n_stored = _write_day(path, existing_da, day_buffers.pop(d, []))
@@ -907,12 +958,11 @@ def build_store(
         by_day.setdefault(t.normalize(), []).append(t)
     days = sorted(by_day)
 
-    todo_by_day, existing_by_day, already = {}, {}, 0
+    todo_by_day, already = {}, 0
     for d in days:
         path = os.path.join(shard_dir, f'pr_{d:%Y%m%d}.nc')
-        have, existing_da = _read_existing(path)
+        have = _read_existing_times(path)
         todo_by_day[d] = [t for t in by_day[d] if pd.Timestamp(t) not in have]
-        existing_by_day[d] = existing_da
         already += len(have & set(by_day[d]))
     total_todo = sum(len(v) for v in todo_by_day.values())
 
@@ -944,7 +994,7 @@ def build_store(
                 anon=True,
                 config_kwargs={'max_pool_connections': max(max_workers * 2, 50)},
             )
-        except Exception as e:  # noqa: BLE001
+        except RuntimeError as e:
             if verbose:
                 log.warning('AWS unavailable (%s); Iowa State only.', e)
 
@@ -955,7 +1005,7 @@ def build_store(
 
     try:
         bar = tqdm(total=total_todo, desc='files', unit='file', disable=not verbose)
-    except Exception:  # noqa: BLE001
+    except RuntimeError:
         bar = None
 
     pool = ThreadPoolExecutor(max_workers=max_workers)
@@ -1081,22 +1131,30 @@ def open_shards(shard_dir: Path) -> xr.Dataset:
 
 
 def storm_catchment_rate_2min(
-    ds: xr.Dataset,
+    pts_all: np.ndarray,
+    times_all: pd.DatetimeIndex,
+    cell_col: dict,
     win_start: pd.Timestamp,
     win_end: pd.Timestamp,
     divide_ids: Iterable[str],
     frac_cw: pd.DataFrame,
     min_coverage: float = 0.95,
 ) -> tuple[pd.DataFrame | None, str | None]:
-    """Extract storm catchment rates from MRMS data."""
-    window = ds['precip_rate'].sel(time=slice(win_start, win_end))
-    if window.sizes.get('time', 0) == 0:
+    """Extract storm catchment rates from pre-loaded MRMS cell data.
+
+    ``pts_all``/``times_all``/``cell_col`` come from extract_all's one-time
+    point-selection + load of just the cells frac_cw references (see there
+    for why) -- this only ever does in-memory numpy slicing, no per-event
+    dataset access.
+    """
+    mask = (times_all >= win_start) & (times_all <= win_end)
+    actual_n = int(mask.sum())
+    if actual_n == 0:
         return None, "no shard data for window"
 
     expected_n = int((win_end - win_start) / pd.Timedelta(minutes=2)) + 1
-    actual_n = window.sizes['time']
     if actual_n < min_coverage * expected_n:
-        present_days = set(pd.DatetimeIndex(window['time'].values).normalize())
+        present_days = set(times_all[mask].normalize())
         all_days = set(
             pd.date_range(win_start.normalize(), win_end.normalize(), freq='D'),
         )
@@ -1110,13 +1168,9 @@ def storm_catchment_rate_2min(
     if len(cw) == 0:
         return None, "no fractional_crosswalk match"
 
-    pts = window.sel(
-        latitude=xr.DataArray(cw['lat'].values, dims='cell'),
-        longitude=xr.DataArray(cw['lon_360'].values, dims='cell'),
-        method='nearest',
-    )
-    values = pts.values  # (time, cell)
-    times = pd.DatetimeIndex(window['time'].values)
+    col_idx = np.array([cell_col[cid] for cid in cw['cell_id']], dtype=np.int64)
+    values = pts_all[np.ix_(mask, col_idx)]  # (time, cell)
+    times = times_all[mask]
 
     # area-weighted catchment mean via sparse matmul, renormalized per-timestep
     cats = sorted(set(cw['divide_id']))
@@ -1160,6 +1214,34 @@ def extract_all(
         list,
     )
 
+    # Pre-select (once) just the unique MRMS grid cells this VPU-shard's
+    # fractional crosswalk actually references -- typically a small fraction
+    # of the shard's full bounding-box grid -- and load them for the whole
+    # time range up front. Reused across every event below via plain numpy
+    # slicing in storm_catchment_rate_2min: avoids both the per-event lazy
+    # multi-file open/read overhead (thousands of events each re-touching
+    # several of the underlying day-files) and the memory blowup of loading
+    # the *entire* (often much larger) bounding-box grid at every timestamp,
+    # most of which no single event ever touches.
+    uniq_cells = (
+        frac_cw.drop_duplicates('cell_id')[['cell_id', 'lat', 'lon_360']]
+        .reset_index(drop=True)
+    )
+    cell_col = {cid: i for i, cid in enumerate(uniq_cells['cell_id'])}
+    log.info(
+        'pre-loading %d unique MRMS cell(s) referenced by this VPU-shard '
+        '(of a larger bounding-box grid) across the full time range...',
+        len(uniq_cells),
+    )
+    pts = ds['precip_rate'].sel(
+        latitude=xr.DataArray(uniq_cells['lat'].values, dims='cell'),
+        longitude=xr.DataArray(uniq_cells['lon_360'].values, dims='cell'),
+        method='nearest',
+    ).load()
+    times_all = pd.DatetimeIndex(pts['time'].values)
+    pts_all = pts.values  # (time, cell)
+    ds.close()
+
     records, flagged, failed = [], [], []
     for _, row in tqdm(manifest.iterrows(), total=len(manifest), desc='extract'):
         sid = row['storm_index']
@@ -1174,7 +1256,9 @@ def extract_all(
             )
             continue
         depth15, reason = storm_catchment_rate_2min(
-            ds,
+            pts_all,
+            times_all,
+            cell_col,
             row['win_start'],
             row['win_end'],
             divide_ids,
@@ -1220,7 +1304,6 @@ def extract_all(
                     'basin_mean_total_mm': basin_mean_total,
                 },
             )
-    ds.close()
     if not records:
         raise RuntimeError("no events extracted")
 
@@ -1276,10 +1359,7 @@ def extract_all(
         (np.datetime64(r['ts_end']) - epoch) / np.timedelta64(1, 'm') for r in records
     ]
 
-    # CSR/ragged catchment layout: each event owns entries
-    # [cat_ptr[i], cat_ptr[i+1]) into the flat 'entry' dimension, holding only
-    # that event's own upstream catchments -- no union across events, so
-    # storage scales with actual data, not events x every-catchment-anywhere.
+    # CSR/ragged catchment layout
     cat_ptr = np.zeros(n_ev + 1, dtype=np.int64)
     cat_ptr[1:] = np.cumsum(n_entries)
     nc.createVariable('cat_ptr', 'i8', ('ptr',))[:] = cat_ptr
@@ -1320,17 +1400,7 @@ def extract_all(
 
 
 def merge_parts(part_paths: Iterable[Path], out_nc: Path) -> None:
-    """Concatenate ragged (CSR) per-event MRMS part files into out_nc.
-
-    Each part stores per-event catchments as entries into a flat 'entry'
-    dimension (see ``extract_all``) -- no catchment axis shared across
-    events, so merging never unions catchments and this is a straight
-    concatenation along event/entry space. Streams part-by-part so peak
-    memory is bounded by the single largest part, not the sum of all parts
-    -- this is what makes merging across VPUs/basins (disjoint catchment
-    sets) tractable; the old dense format scaled with the union of every
-    part's catchments times the sum of every part's events.
-    """
+    """Concatenate ragged (CSR) per-event MRMS part files into out_nc."""
     part_paths = list(part_paths)
     ncs = [netCDF4.Dataset(p, 'r') for p in part_paths]
 

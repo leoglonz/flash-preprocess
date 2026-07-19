@@ -1,12 +1,6 @@
-r"""Convert a USGS discharge CSV to an event-indexed NetCDF.
+"""Convert a USGS discharge CSV to an event-indexed NetCDF.
 
-Usage
------
-    python engine/streamflow/usgs/to_events.py \
-        --forcing /path/to/forcing_15min.nc \
-        --csv     /path/to/usgs_discharge.csv \
-        --output  /path/to/streamflow.nc \
-        [--complevel 4]
+@drworm
 """
 
 import argparse
@@ -17,12 +11,26 @@ import netCDF4
 import numpy as np
 import pandas as pd
 
+from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
+
 log = logging.getLogger('USGS-ToEvents')
+
+_EPOCH = pd.Timestamp('1970-01-01', tz='UTC')
+_MIN_TO_NS = 60 * 1_000_000_000  # nanoseconds per minute
 
 
 # CONFIG -------------------------- #
-_EPOCH = pd.Timestamp('1970-01-01', tz='UTC')
-_MIN_TO_NS = 60 * 1_000_000_000  # nanoseconds per minute
+# Merged 15-min forcing NetCDF (from merge_15min.py); provides event windows.
+FORCING_NC = _EVENTS_CSV.parent / 'forcing_15min.nc'
+
+# Long-format USGS discharge CSV (from extract.py's OUTPUT_CSV).
+CSV_PATH = _EVENTS_CSV.parent / 'usgs_discharge.csv'
+
+# Output event-indexed NetCDF path.
+OUTPUT_NC = _EVENTS_CSV.parent / 'streamflow.nc'
+
+# zlib compression level 1-9.
+COMPLEVEL = 4
 # -------------------------- #
 
 
@@ -42,9 +50,8 @@ def _load_str_var(ds: netCDF4.Dataset, name: str) -> np.ndarray:
     return out
 
 
-def main() -> None:
-    """CLI entry point."""
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+def parse_args():
+    """Parse command-line overrides for the CONFIG block above."""
     parser = argparse.ArgumentParser(
         description="Convert USGS discharge CSV to event-indexed NetCDF.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -52,22 +59,35 @@ def main() -> None:
     )
     parser.add_argument(
         '--forcing',
-        required=True,
-        help="Path to forcing_15min.nc (provides event windows)",
+        type=Path,
+        default=FORCING_NC,
+        help="Path to forcing_15min.nc, provides event windows (default: %(default)s)",
     )
     parser.add_argument(
         '--csv',
-        required=True,
-        help="Path to long-format USGS discharge CSV",
+        type=Path,
+        default=CSV_PATH,
+        help="Path to long-format USGS discharge CSV (default: %(default)s)",
     )
-    parser.add_argument('--output', required=True, help="Output NetCDF path")
+    parser.add_argument(
+        '--output',
+        type=Path,
+        default=OUTPUT_NC,
+        help="Output NetCDF path (default: %(default)s)",
+    )
     parser.add_argument(
         '--complevel',
         type=int,
-        default=4,
-        help="zlib compression level 1-9 (default: 4)",
+        default=COMPLEVEL,
+        help="zlib compression level 1-9 (default: %(default)s)",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def to_events() -> None:
+    """Run the USGS discharge -> event-indexed NetCDF conversion."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    args = parse_args()
 
     nc_f = netCDF4.Dataset(args.forcing, 'r')
 
@@ -196,4 +216,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    to_events()

@@ -9,6 +9,8 @@ Outputs:
 
 Edit the CONFIG block at the top of this file to set all options, or
 override per-invocation via CLI flags (see below).
+
+@drworm
 """
 
 import argparse
@@ -51,7 +53,7 @@ OUT_HR_NC = _CACHE_DIR / 'aorc_hr.nc'
 OUT_15MIN_NC = _CACHE_DIR / 'aorc_15min.nc'
 
 # More workers == faster. Make sure you have enough CPUs (=workers) and RAM.
-MAX_WORKERS = 16
+MAX_WORKERS = 32
 
 # Total width of each event's forcing window (days), centered on event.
 #    Must match WINDOW_DAYS used for MRMS run.
@@ -145,6 +147,20 @@ def aorc_extract():
                 shutil.rmtree(vpu_dir)
             log.info('FRESH_START: cleared weight cache and %s', vpu_dir)
 
+        hr_part = vpu_dir / 'aorc_hr_part.nc'
+        min15_part = vpu_dir / 'aorc_15min_part.nc'
+        if not fresh_start and hr_part.exists() and min15_part.exists():
+            log.info(
+                '%s and %s already exist -- skipping manifest/weights/shards/extract '
+                'for VPU %s (use --fresh-start to force a rebuild).',
+                hr_part,
+                min15_part,
+                vpu,
+            )
+            hr_parts.append(hr_part)
+            min15_parts.append(min15_part)
+            continue
+
         manifest, event_catchment_windows = build_manifest(
             vpu_events,
             cache_dir,
@@ -170,10 +186,9 @@ def aorc_extract():
 
         build_shards(manifest, weight_idx, vpu_dir, antecedent_days=antecedent_days)
 
-        hr_part = vpu_dir / 'aorc_hr_part.nc'
-        min15_part = vpu_dir / 'aorc_15min_part.nc'
         extract_all(
             manifest,
+            event_catchment_windows,
             weight_idx,
             vpu_dir / 'shards',
             hr_part,

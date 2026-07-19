@@ -42,7 +42,7 @@ DIVIDE_IDS = None
 GPKG = _HYDROFABRIC_GPKG
 
 # Output directory for divides.gpkg / topology.json / gauges.csv.
-OUTPUT_DIR = _CACHE_DIR / 'hf_extract'
+OUTPUT_DIR = _CACHE_DIR.parent
 
 # True -- expand seed divides to their full upstream network.
 # False -- only keep the seed divide IDs, no upstream expansion.

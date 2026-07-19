@@ -5,6 +5,8 @@ Outputs:
 
 Edit the CONFIG block at the top of this file to set all options, or
 override per-invocation via CLI flags (see below).
+
+@drworm
 """
 
 import argparse

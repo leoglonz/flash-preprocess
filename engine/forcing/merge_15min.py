@@ -32,6 +32,9 @@ Output
     T     from AORC
     PET   from AORC
 
+Edit the CONFIG block at the top of this file to set all options, or
+override per-invocation via CLI flags (see below).
+
 Usage
 -----
     python engine/forcing/merge_15min.py \\
@@ -50,7 +53,29 @@ import netCDF4
 import numpy as np
 from tqdm.auto import tqdm
 
+from flash_preprocess.paths import CACHE_DIR as _CACHE_DIR
+from flash_preprocess.paths import EVENTS_CSV as _EVENTS_CSV
+
 log = logging.getLogger('MergeForcing')
+
+
+# CONFIG -------------------------- #
+# AORC 15-min forcing NetCDF (output of aorc/extract.py).
+AORC_NC = _CACHE_DIR / 'aorc_15min.nc'
+
+# AORC hourly antecedent NetCDF (output of aorc/extract.py); used only to
+# check that its warmup window ends exactly where the MRMS event window begins.
+AORC_HR_NC = _CACHE_DIR / 'aorc_hr.nc'
+
+# MRMS 15-min forcing NetCDF (output of mrms/extract.py).
+MRMS_NC = _CACHE_DIR / 'mrms_15min.nc'
+
+# Output combined forcing NetCDF.
+OUTPUT_NC = _EVENTS_CSV.parent / 'forcing_15min.nc'
+
+# zlib compression level 1-9.
+COMPLEVEL = 4
+# -------------------------- #
 
 
 def _load_str_var(ds: netCDF4.Dataset, name: str, idx=None) -> np.ndarray:
@@ -64,9 +89,8 @@ def _load_str_var(ds: netCDF4.Dataset, name: str, idx=None) -> np.ndarray:
     return out
 
 
-def main() -> None:
-    """Parse CLI arguments and run the AORC + MRMS merge pipeline."""
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+def parse_args():
+    """Parse command-line overrides for the CONFIG block above."""
     parser = argparse.ArgumentParser(
         description="Merge AORC and MRMS 15-min forcing NetCDFs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -74,28 +98,43 @@ def main() -> None:
     )
     parser.add_argument(
         '--aorc',
-        required=True,
-        help="AORC 15-min NC (output of to_events.py, events_15min.nc)",
+        type=Path,
+        default=AORC_NC,
+        help="AORC 15-min NC, output of aorc/extract.py (default: %(default)s)",
     )
     parser.add_argument(
         '--aorc-hr',
-        required=True,
-        help="AORC hourly antecedent NC (aorc_hr.nc), used only to check that "
-        "its warmup window ends exactly where the MRMS event window begins",
+        type=Path,
+        default=AORC_HR_NC,
+        help="AORC hourly antecedent NC, used only to check that its warmup "
+        "window ends exactly where the MRMS event window begins "
+        "(default: %(default)s)",
     )
     parser.add_argument(
         '--mrms',
-        required=True,
-        help="MRMS 15-min NC (output of aggregate_events.py)",
+        type=Path,
+        default=MRMS_NC,
+        help="MRMS 15-min NC, output of mrms/extract.py (default: %(default)s)",
     )
-    parser.add_argument('--output', required=True, help="Output NetCDF path")
+    parser.add_argument(
+        '--output',
+        type=Path,
+        default=OUTPUT_NC,
+        help="Output NetCDF path (default: %(default)s)",
+    )
     parser.add_argument(
         '--complevel',
         type=int,
-        default=4,
-        help="zlib compression level 1-9 (default: 4)",
+        default=COMPLEVEL,
+        help="zlib compression level 1-9 (default: %(default)s)",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def merge_forcing() -> None:
+    """Run the AORC + MRMS merge pipeline."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    args = parse_args()
 
     # open source files
     nc_aorc = netCDF4.Dataset(args.aorc, 'r')
@@ -359,4 +398,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    merge_forcing()
