@@ -49,7 +49,7 @@ VPU_SUBSET = None
 #   Else, disables end-of-run auto-merge.
 TAG_SUFFIX = ''
 
-# Where to cache per-VPU windows, timesteps, and NetCDF shards. 
+# Where to cache per-VPU windows, timesteps, and NetCDF shards.
 CACHE_DIR = _CACHE_DIR
 
 # Output NetCDF path for merged 15-min MRMS precipitation.
