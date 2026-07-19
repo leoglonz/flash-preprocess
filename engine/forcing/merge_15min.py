@@ -62,24 +62,24 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument(
-        "--aorc",
+        '--aorc',
         required=True,
         help="AORC 15-min NC (output of to_events.py, events_15min.nc)",
     )
     parser.add_argument(
-        "--aorc-hr",
+        '--aorc-hr',
         required=True,
         help="AORC hourly antecedent NC (aorc_hr.nc), used only to check that "
         "its warmup window ends exactly where the MRMS event window begins",
     )
     parser.add_argument(
-        "--mrms",
+        '--mrms',
         required=True,
         help="MRMS 15-min NC (output of aggregate_events.py)",
     )
-    parser.add_argument("--output", required=True, help="Output NetCDF path")
+    parser.add_argument('--output', required=True, help="Output NetCDF path")
     parser.add_argument(
-        "--complevel",
+        '--complevel',
         type=int,
         default=4,
         help="zlib compression level 1-9 (default: 4)",
@@ -87,12 +87,12 @@ def main() -> None:
     args = parser.parse_args()
 
     # open source files
-    nc_aorc = netCDF4.Dataset(args.aorc, "r")
-    nc_mrms = netCDF4.Dataset(args.mrms, "r")
+    nc_aorc = netCDF4.Dataset(args.aorc, 'r')
+    nc_mrms = netCDF4.Dataset(args.mrms, 'r')
 
-    aorc_event_ids = _load_str_var(nc_aorc, "event_id")
+    aorc_event_ids = _load_str_var(nc_aorc, 'event_id')
     mrms_event_ids = np.array(
-        [str(int(sid)) for sid in nc_mrms.variables["storm_id"][:]],
+        [str(int(sid)) for sid in nc_mrms.variables['storm_id'][:]],
         dtype=object,
     )
     event_to_mrms_idx = {eid: i for i, eid in enumerate(mrms_event_ids)}
@@ -122,8 +122,8 @@ def main() -> None:
     # WINDOW_DAYS/CENTROID -- a stale file from an older config would merge
     # silently, splicing MRMS precip for one time window onto AORC
     # temperature/PET for a different one. Catch that here instead.
-    aorc_ts_start_chk = np.array(nc_aorc.variables["ts_start"][:], dtype=np.float64)
-    mrms_ts_start_chk = np.array(nc_mrms.variables["ts_start"][:], dtype=np.float64)
+    aorc_ts_start_chk = np.array(nc_aorc.variables['ts_start'][:], dtype=np.float64)
+    mrms_ts_start_chk = np.array(nc_mrms.variables['ts_start'][:], dtype=np.float64)
     offset_min = aorc_ts_start_chk[aorc_indices] - mrms_ts_start_chk[mrms_indices]
     bad = np.abs(offset_min) > 1.0  # allow <1 min for float rounding
     if bad.any():
@@ -140,10 +140,10 @@ def main() -> None:
     # ts_end is the timestamp of the *last hourly step itself* (an hourly
     # value at hour H covers [H, H+1)), so the true end of the warmup period
     # is ts_end + 60 min, which should equal MRMS's ts_start exactly.
-    nc_aorc_hr = netCDF4.Dataset(args.aorc_hr, "r")
-    aorc_hr_event_ids = _load_str_var(nc_aorc_hr, "event_id")
+    nc_aorc_hr = netCDF4.Dataset(args.aorc_hr, 'r')
+    aorc_hr_event_ids = _load_str_var(nc_aorc_hr, 'event_id')
     aorc_hr_idx = {eid: i for i, eid in enumerate(aorc_hr_event_ids)}
-    aorc_hr_ts_end = np.array(nc_aorc_hr.variables["ts_end"][:], dtype=np.float64)
+    aorc_hr_ts_end = np.array(nc_aorc_hr.variables['ts_end'][:], dtype=np.float64)
     nc_aorc_hr.close()
 
     missing_hr = [eid for eid in event_ids if eid not in aorc_hr_idx]
@@ -166,8 +166,8 @@ def main() -> None:
         )
 
     # align catchments: inner join, report drops from each side
-    aorc_cats = _load_str_var(nc_aorc, "divide_id")
-    mrms_cats = _load_str_var(nc_mrms, "divide_id")
+    aorc_cats = _load_str_var(nc_aorc, 'divide_id')
+    mrms_cats = _load_str_var(nc_mrms, 'divide_id')
     aorc_set = set(aorc_cats)
     mrms_set = set(mrms_cats)
     common = sorted(aorc_set & mrms_set)
@@ -196,20 +196,20 @@ def main() -> None:
     )
 
     # figure out max_steps (both sources are nominally 480, take the max)
-    aorc_max = nc_aorc.dimensions["time_step"].size
-    mrms_max = nc_mrms.dimensions["time_step"].size
+    aorc_max = nc_aorc.dimensions['time_step'].size
+    mrms_max = nc_mrms.dimensions['time_step'].size
     max_steps = max(aorc_max, mrms_max)
     print(f"time_step dim: AORC {aorc_max}, MRMS {mrms_max} -> output {max_steps}")
 
     # read n_steps and event_start from AORC; n_steps from MRMS for crosscheck
-    aorc_n_steps = np.array(nc_aorc.variables["n_steps"][:], dtype=np.int32)
-    mrms_n_steps = np.array(nc_mrms.variables["n_steps"][:], dtype=np.int32)
+    aorc_n_steps = np.array(nc_aorc.variables['n_steps'][:], dtype=np.int32)
+    mrms_n_steps = np.array(nc_mrms.variables['n_steps'][:], dtype=np.int32)
     aorc_ts_starts = aorc_ts_start_chk
-    aorc_ts_ends = np.array(nc_aorc.variables["ts_end"][:], dtype=np.float64)
-    aorc_lats = np.array(nc_aorc.variables["latitude"][:], dtype=np.float32)
-    aorc_lons = np.array(nc_aorc.variables["longitude"][:], dtype=np.float32)
-    aorc_gage_ids = _load_str_var(nc_aorc, "event_gage_id")
-    aorc_divide_ids = _load_str_var(nc_aorc, "event_divide_id")
+    aorc_ts_ends = np.array(nc_aorc.variables['ts_end'][:], dtype=np.float64)
+    aorc_lats = np.array(nc_aorc.variables['latitude'][:], dtype=np.float32)
+    aorc_lons = np.array(nc_aorc.variables['longitude'][:], dtype=np.float32)
+    aorc_gage_ids = _load_str_var(nc_aorc, 'event_gage_id')
+    aorc_divide_ids = _load_str_var(nc_aorc, 'event_divide_id')
 
     out_n_steps = np.minimum(
         aorc_n_steps[aorc_indices],
@@ -218,49 +218,49 @@ def main() -> None:
 
     # create output
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    nc_out = netCDF4.Dataset(args.output, "w", format="NETCDF4")
-    nc_out.createDimension("event", n_events)
-    nc_out.createDimension("time_step", max_steps)
-    nc_out.createDimension("catchment", n_catchments)
+    nc_out = netCDF4.Dataset(args.output, 'w', format='NETCDF4')
+    nc_out.createDimension('event', n_events)
+    nc_out.createDimension('time_step', max_steps)
+    nc_out.createDimension('catchment', n_catchments)
 
-    v = nc_out.createVariable("event_id", str, ("event",))
+    v = nc_out.createVariable('event_id', str, ('event',))
     v.long_name = "shared AORC/MRMS event ID"
     v[:] = np.array(event_ids, dtype=object)
 
-    v = nc_out.createVariable("n_steps", "i4", ("event",))
+    v = nc_out.createVariable('n_steps', 'i4', ('event',))
     v.long_name = "valid 15-min timesteps (min of AORC and MRMS coverage)"
     v[:] = out_n_steps
 
-    v = nc_out.createVariable("ts_start", "f8", ("event",))
+    v = nc_out.createVariable('ts_start', 'f8', ('event',))
     v.units = "minutes since 1970-01-01 00:00:00 UTC"
     v.long_name = "start of the 5-day timeseries window (from AORC, time step 0)"
     v[:] = aorc_ts_starts[aorc_indices]
 
-    v = nc_out.createVariable("ts_end", "f8", ("event",))
+    v = nc_out.createVariable('ts_end', 'f8', ('event',))
     v.units = "minutes since 1970-01-01 00:00:00 UTC"
     v.long_name = "end of the 5-day timeseries window (from AORC, time step n_steps-1)"
     v[:] = aorc_ts_ends[aorc_indices]
 
-    v = nc_out.createVariable("event_gage_id", str, ("event",))
+    v = nc_out.createVariable('event_gage_id', str, ('event',))
     v.long_name = "zero-padded 8-digit USGS gauge ID downstream of this event"
     v[:] = aorc_gage_ids[aorc_indices]
 
-    v = nc_out.createVariable("event_divide_id", str, ("event",))
+    v = nc_out.createVariable('event_divide_id', str, ('event',))
     v.long_name = "NextGen catchment ID downstream of this event"
     v[:] = aorc_divide_ids[aorc_indices]
 
-    v = nc_out.createVariable("divide_id", str, ("catchment",))
+    v = nc_out.createVariable('divide_id', str, ('catchment',))
     v.long_name = "NextGen catchment ID"
     v[:] = np.array(common, dtype=object)
 
-    v = nc_out.createVariable("latitude", "f4", ("catchment",))
-    v.units = "degrees_north"
-    v.standard_name = "latitude"
+    v = nc_out.createVariable('latitude', 'f4', ('catchment',))
+    v.units = 'degrees_north'
+    v.standard_name = 'latitude'
     v[:] = aorc_lats[aorc_ci]
 
-    v = nc_out.createVariable("longitude", "f4", ("catchment",))
-    v.units = "degrees_east"
-    v.standard_name = "longitude"
+    v = nc_out.createVariable('longitude', 'f4', ('catchment',))
+    v.units = 'degrees_east'
+    v.standard_name = 'longitude'
     v[:] = aorc_lons[aorc_ci]
 
     chunk_e = min(n_events, 16)
@@ -270,8 +270,8 @@ def main() -> None:
         """Create a compressed (event, time_step, catchment) float32 variable, pre-filled with NaN."""
         nv = nc_out.createVariable(
             name,
-            "f4",
-            ("event", "time_step", "catchment"),
+            'f4',
+            ('event', 'time_step', 'catchment'),
             fill_value=np.nan,
             zlib=True,
             complevel=args.complevel,
@@ -299,17 +299,17 @@ def main() -> None:
         desc="Reading events",
     ):
         ns = int(out_n_steps[out_i])
-        P[out_i, :ns, :] = nc_mrms.variables["P"][mi, :ns, :][:, mrms_ci]
-        T[out_i, :ns, :] = nc_aorc.variables["T"][ai, :ns, :][:, aorc_ci]
-        PET[out_i, :ns, :] = nc_aorc.variables["PET"][ai, :ns, :][:, aorc_ci]
+        P[out_i, :ns, :] = nc_mrms.variables['P'][mi, :ns, :][:, mrms_ci]
+        T[out_i, :ns, :] = nc_aorc.variables['T'][ai, :ns, :][:, aorc_ci]
+        PET[out_i, :ns, :] = nc_aorc.variables['PET'][ai, :ns, :][:, aorc_ci]
 
     nc_aorc.close()
     nc_mrms.close()
 
     print("Writing output ...")
-    _make_var("P", "mm [15 min]-1", "MRMS precipitation depth")[:] = P
-    _make_var("T", "degC", "Air temperature at 2 m (interpolated)")[:] = T
-    _make_var("PET", "mm [15 min]-1", "Penman-Monteith ET0 (15-min, uniform split)")[
+    _make_var('P', "mm [15 min]-1", "MRMS precipitation depth")[:] = P
+    _make_var('T', 'degC', "Air temperature at 2 m (interpolated)")[:] = T
+    _make_var('PET', "mm [15 min]-1", "Penman-Monteith ET0 (15-min, uniform split)")[
         :
     ] = PET
 
@@ -320,5 +320,5 @@ def main() -> None:
     )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

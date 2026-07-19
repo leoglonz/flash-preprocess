@@ -40,7 +40,7 @@ import netCDF4
 import numpy as np
 import pandas as pd
 
-_EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
+_EPOCH = pd.Timestamp('1970-01-01', tz='UTC')
 _MIN_TO_NS = 60 * 1_000_000_000  # nanoseconds per minute
 
 
@@ -68,31 +68,31 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument(
-        "--forcing",
+        '--forcing',
         required=True,
         help="Path to forcing_15min.nc (provides event windows)",
     )
     parser.add_argument(
-        "--csv",
+        '--csv',
         required=True,
         help="Path to long-format USGS discharge CSV",
     )
-    parser.add_argument("--output", required=True, help="Output NetCDF path")
+    parser.add_argument('--output', required=True, help="Output NetCDF path")
     parser.add_argument(
-        "--complevel",
+        '--complevel',
         type=int,
         default=4,
         help="zlib compression level 1-9 (default: 4)",
     )
     args = parser.parse_args()
 
-    nc_f = netCDF4.Dataset(args.forcing, "r")
+    nc_f = netCDF4.Dataset(args.forcing, 'r')
 
-    event_ids = _load_str_var(nc_f, "event_id")
-    ts_starts = np.array(nc_f.variables["ts_start"][:], dtype=np.float64)
-    ts_ends = np.array(nc_f.variables["ts_end"][:], dtype=np.float64)
-    n_steps_arr = np.array(nc_f.variables["n_steps"][:], dtype=np.int32)
-    max_steps = nc_f.dimensions["time_step"].size
+    event_ids = _load_str_var(nc_f, 'event_id')
+    ts_starts = np.array(nc_f.variables['ts_start'][:], dtype=np.float64)
+    ts_ends = np.array(nc_f.variables['ts_end'][:], dtype=np.float64)
+    n_steps_arr = np.array(nc_f.variables['n_steps'][:], dtype=np.int32)
+    max_steps = nc_f.dimensions['time_step'].size
     nc_f.close()
 
     n_events = len(event_ids)
@@ -101,19 +101,19 @@ def main() -> None:
     print(f"Reading CSV: {args.csv}")
     df_raw = pd.read_csv(
         args.csv,
-        usecols=["STAID", "datetime", "discharge_cfs"],
-        parse_dates=["datetime"],
+        usecols=['STAID', 'datetime', 'discharge_cfs'],
+        parse_dates=['datetime'],
         date_format="%Y-%m-%d %H:%M:%S",
     )
-    df_raw["STAID"] = df_raw["STAID"].astype(str).str.zfill(8)
-    df_raw["datetime"] = df_raw["datetime"].dt.tz_localize("UTC")
+    df_raw['STAID'] = df_raw['STAID'].astype(str).str.zfill(8)
+    df_raw['datetime'] = df_raw['datetime'].dt.tz_localize('UTC')
 
     # pivot: rows = datetime, columns = STAID
     df_wide = df_raw.pivot_table(
-        index="datetime",
-        columns="STAID",
-        values="discharge_cfs",
-        aggfunc="mean",
+        index='datetime',
+        columns='STAID',
+        values='discharge_cfs',
+        aggfunc='mean',
     )
     df_wide.sort_index(inplace=True)
 
@@ -132,7 +132,7 @@ def main() -> None:
 
         t_start = _minutes_to_timestamp(ts_starts[e_idx])
         t_end = _minutes_to_timestamp(ts_ends[e_idx])
-        times_15min = pd.date_range(start=t_start, end=t_end, freq="15min")
+        times_15min = pd.date_range(start=t_start, end=t_end, freq='15min')
         n_window = min(ns, len(times_15min), max_steps)
 
         # searchsorted for bulk alignment: O(n_window * log N) vs O(N^2)
@@ -158,26 +158,26 @@ def main() -> None:
             )
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    nc_out = netCDF4.Dataset(args.output, "w", format="NETCDF4")
-    nc_out.createDimension("event", n_events)
-    nc_out.createDimension("time_step", max_steps)
-    nc_out.createDimension("gauge", n_gauges)
+    nc_out = netCDF4.Dataset(args.output, 'w', format='NETCDF4')
+    nc_out.createDimension('event', n_events)
+    nc_out.createDimension('time_step', max_steps)
+    nc_out.createDimension('gauge', n_gauges)
 
-    v = nc_out.createVariable("event_id", str, ("event",))
+    v = nc_out.createVariable('event_id', str, ('event',))
     v.long_name = "event ID (matches forcing_15min.nc)"
     v[:] = np.array(event_ids, dtype=object)
 
-    v = nc_out.createVariable("ts_start", "f8", ("event",))
+    v = nc_out.createVariable('ts_start', 'f8', ('event',))
     v.units = "minutes since 1970-01-01 00:00:00 UTC"
     v.long_name = "start of the 15-min event window"
     v[:] = ts_starts
 
-    v = nc_out.createVariable("ts_end", "f8", ("event",))
+    v = nc_out.createVariable('ts_end', 'f8', ('event',))
     v.units = "minutes since 1970-01-01 00:00:00 UTC"
     v.long_name = "end of the 15-min event window"
     v[:] = ts_ends
 
-    v = nc_out.createVariable("gauge_id", str, ("gauge",))
+    v = nc_out.createVariable('gauge_id', str, ('gauge',))
     v.long_name = "zero-padded 8-digit USGS STAID"
     v[:] = np.array(gauge_ids, dtype=object)
 
@@ -185,15 +185,15 @@ def main() -> None:
     chunk_g = min(n_gauges, 64)
 
     v_sf = nc_out.createVariable(
-        "streamflow",
-        "f4",
-        ("event", "time_step", "gauge"),
+        'streamflow',
+        'f4',
+        ('event', 'time_step', 'gauge'),
         fill_value=np.nan,
         zlib=True,
         complevel=args.complevel,
         chunksizes=(chunk_e, max_steps, chunk_g),
     )
-    v_sf.units = "cfs"
+    v_sf.units = 'cfs'
     v_sf.long_name = "USGS discharge"
     v_sf.coordinates = "event_id ts_start ts_end gauge_id"
     v_sf[:] = streamflow
@@ -203,5 +203,5 @@ def main() -> None:
     print(f"  Shape: ({n_events} events, {max_steps} time_steps, {n_gauges} gauges)")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

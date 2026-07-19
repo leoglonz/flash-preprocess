@@ -27,9 +27,13 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-log = logging.getLogger('DownloadDischarge')
+log = logging.getLogger('USGS-Download')
 
+
+### DEFAULTS --------------- #
+# NWIS Instantaneous Values service URL for USGS discharge (00060).
 NWIS_IV_URL = 'https://waterservices.usgs.gov/nwis/iv/'
+# -------------------------- #
 
 
 def load_gage_ids(events_csv: Path, staid_col: str) -> list[str]:

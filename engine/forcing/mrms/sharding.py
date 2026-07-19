@@ -30,10 +30,10 @@ import pandas as pd
 def main() -> None:
     """Split an events CSV into N time-contiguous shards."""
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--events-csv", type=Path, required=True)
-    ap.add_argument("--n-shards", type=int, required=True)
+    ap.add_argument('--events-csv', type=Path, required=True)
+    ap.add_argument('--n-shards', type=int, required=True)
     ap.add_argument(
-        "--out-dir",
+        '--out-dir',
         type=Path,
         default=None,
         help="Defaults to --events-csv's own directory.",
@@ -43,25 +43,25 @@ def main() -> None:
     out_dir = args.out_dir or args.events_csv.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    events = pd.read_csv(args.events_csv, dtype={"STAID": str})
+    events = pd.read_csv(args.events_csv, dtype={'STAID': str})
     print(f"{len(events):,} events -> {args.n_shards} shard(s)")
 
-    sort_key = pd.to_datetime(events["BEGIN_DATE_TIME"], utc=True)
+    sort_key = pd.to_datetime(events['BEGIN_DATE_TIME'], utc=True)
     events = (
         events.assign(_sort_key=sort_key)
-        .sort_values("_sort_key")
+        .sort_values('_sort_key')
         .reset_index(drop=True)
     )
-    events["shard"] = np.arange(len(events)) * args.n_shards // len(events)
+    events['shard'] = np.arange(len(events)) * args.n_shards // len(events)
 
     stem = args.events_csv.stem
     for i in range(args.n_shards):
-        shard = events[events["shard"] == i].drop(columns=["_sort_key", "shard"])
-        out_path = out_dir / f"{stem}_shard{i}.csv"
+        shard = events[events['shard'] == i].drop(columns=['_sort_key', 'shard'])
+        out_path = out_dir / f'{stem}_shard{i}.csv'
         shard.to_csv(out_path, index=False)
         span = f"{shard['BEGIN_DATE_TIME'].min()} -> {shard['BEGIN_DATE_TIME'].max()}"
         print(f"  shard {i}: {len(shard):,} events ({span}) -> {out_path}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

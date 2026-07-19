@@ -32,8 +32,8 @@ def build_upstream_graph(hf_path: str) -> dict[str, list[str]]:
     flowpaths = pd.read_sql("SELECT id, divide_id FROM flowpaths", conn)
     conn.close()
 
-    nex_to_wb = nexus.set_index("id")["toid"].to_dict()
-    wb_to_cat = flowpaths.set_index("id")["divide_id"].to_dict()
+    nex_to_wb = nexus.set_index('id')['toid'].to_dict()
+    wb_to_cat = flowpaths.set_index('id')['divide_id'].to_dict()
 
     upstream = {}
     for row in divides.itertuples(index=False):
@@ -116,8 +116,8 @@ def get_cell_weights(
     output: pd.DataFrame = exact_extract(
         rastersource,
         gdf,
-        ["cell_id", "coverage"],
-        include_cols=["divide_id"],
-        output="pandas",
+        ['cell_id', 'coverage'],
+        include_cols=['divide_id'],
+        output='pandas',
     )  # type: ignore
-    return output.set_index("divide_id")
+    return output.set_index('divide_id')

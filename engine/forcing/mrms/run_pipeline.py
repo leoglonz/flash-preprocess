@@ -20,7 +20,7 @@ from flash_preprocess.mrms import (
 # (see build_args()/parse_args()) -- this is what makes running many parallel
 # sharded instances possible without hand-editing this file per process; see
 # split_events_shards.py + run_sharded.sh.
-EVENTS_CSV = Path("/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv")
+EVENTS_CSV = Path('/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv')
 EVENT_IDS = None  # None -> all events in EVENTS_CSV; else e.g. [1266, 4703]
 
 # VPUs to process in this runtime. None -> every VPU present in EVENTS_CSV, all
@@ -39,10 +39,10 @@ VPU_SUBSET = None
 # only ever has a fraction of any given VPU's events, so merging just its own
 # parts would silently produce an incomplete result mislabeled as final) --
 # merge all shards' parts together explicitly once every instance is done.
-TAG_SUFFIX = ""
+TAG_SUFFIX = ''
 
-CACHE_DIR = Path("/projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess/neuse")
-OUT_NC = Path("/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc")
+CACHE_DIR = Path('/projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess/neuse')
+OUT_NC = Path('/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/mrms_15min.nc')
 
 BBOX_MARGIN_DEG = 0.1
 MAX_WORKERS = 100
@@ -53,7 +53,7 @@ WINDOW_DAYS = 6.0
 
 # 'midpoint' -- window centered on the mean of BEGIN_DATE_TIME/END_DATE_TIME.
 # 'peak' -- window centered on the event's peak_time column instead.
-CENTROID = "peak"
+CENTROID = 'peak'
 
 # True -> ignore cached per-VPU windows and downloaded MRMS timesteps, and
 # rebuild both from scratch for every VPU in this run. Does NOT touch the
@@ -68,25 +68,25 @@ FRESH_START = False
 def parse_args():
     """Parse command-line overrides for the CONFIG block above."""
     p = argparse.ArgumentParser(description="MRMS download + extraction pipeline")
-    p.add_argument("--events-csv", type=Path, default=EVENTS_CSV)
+    p.add_argument('--events-csv', type=Path, default=EVENTS_CSV)
     p.add_argument(
-        "--vpu-subset",
+        '--vpu-subset',
         default=None,
         help="Comma-separated VPU codes, e.g. '03N,02'. Unset -> every VPU "
         "present in --events-csv (the VPU_SUBSET default).",
     )
     p.add_argument(
-        "--tag-suffix",
+        '--tag-suffix',
         default=TAG_SUFFIX,
         help="Appended to per-VPU cache/output paths; non-empty disables "
         "auto-merge at the end of this run (see TAG_SUFFIX above).",
     )
-    p.add_argument("--cache-dir", type=Path, default=CACHE_DIR)
-    p.add_argument("--out-nc", type=Path, default=OUT_NC)
-    p.add_argument("--max-workers", type=int, default=MAX_WORKERS)
-    p.add_argument("--window-days", type=float, default=WINDOW_DAYS)
-    p.add_argument("--centroid", choices=["midpoint", "peak"], default=CENTROID)
-    p.add_argument("--fresh-start", action="store_true", default=FRESH_START)
+    p.add_argument('--cache-dir', type=Path, default=CACHE_DIR)
+    p.add_argument('--out-nc', type=Path, default=OUT_NC)
+    p.add_argument('--max-workers', type=int, default=MAX_WORKERS)
+    p.add_argument('--window-days', type=float, default=WINDOW_DAYS)
+    p.add_argument('--centroid', choices=['midpoint', 'peak'], default=CENTROID)
+    p.add_argument('--fresh-start', action='store_true', default=FRESH_START)
     return p.parse_args()
 
 
@@ -94,7 +94,7 @@ def main():
     """Run the MRMS download and extraction pipeline."""
     args = parse_args()
     events_csv = args.events_csv
-    vpu_subset = args.vpu_subset.split(",") if args.vpu_subset else None
+    vpu_subset = args.vpu_subset.split(',') if args.vpu_subset else None
     tag_suffix = args.tag_suffix
     cache_dir = args.cache_dir
     out_nc = args.out_nc
@@ -109,18 +109,18 @@ def main():
     crosswalk = build_crosswalk(catchments_master, cache_dir)
     print(f"crosswalk: {len(crosswalk):,} MRMS cells")
 
-    events = pd.read_csv(events_csv, dtype={"STAID": str})
+    events = pd.read_csv(events_csv, dtype={'STAID': str})
     if EVENT_IDS is not None:
-        events = events[events["event_id"].isin(EVENT_IDS)]
+        events = events[events['event_id'].isin(EVENT_IDS)]
 
-    cat_vpu = catchments_master.set_index("divide_id")["vpuid"]
-    events = events.assign(vpuid=events["gage_cat-id"].map(cat_vpu))
-    vpus = sorted(events["vpuid"].dropna().unique())
+    cat_vpu = catchments_master.set_index('divide_id')['vpuid']
+    events = events.assign(vpuid=events['gage_cat-id'].map(cat_vpu))
+    vpus = sorted(events['vpuid'].dropna().unique())
     if vpu_subset is not None:
         vpus = [v for v in vpus if v in vpu_subset]
     print(
         f"events: {len(events):,} across {len(vpus)} VPU(s): {vpus}"
-        + (f"  [tag suffix: {tag_suffix!r}]" if tag_suffix else ""),
+        + (f"  [tag suffix: {tag_suffix!r}]" if tag_suffix else ''),
     )
     print(f"window: {window_days} day(s) centered on '{centroid}'")
 
@@ -130,14 +130,14 @@ def main():
 
     part_ncs = []
     for vpu in vpus:
-        vpu_tag = f"{vpu}{tag_suffix}"
+        vpu_tag = f'{vpu}{tag_suffix}'
         print(f"\n=== VPU {vpu}  (tag: {vpu_tag}) ===")
-        vpu_events = events[events["vpuid"] == vpu]
-        vpu_dir = cache_dir / "vpu_runs" / vpu_tag
+        vpu_events = events[events['vpuid'] == vpu]
+        vpu_dir = cache_dir / 'vpu_runs' / vpu_tag
 
         if fresh_start:
-            f_manifest = cache_dir / f"manifest_out_{vpu_tag}.parquet"
-            f_windows = cache_dir / f"event_catchment_windows_{vpu_tag}.parquet"
+            f_manifest = cache_dir / f'manifest_out_{vpu_tag}.parquet'
+            f_windows = cache_dir / f'event_catchment_windows_{vpu_tag}.parquet'
             for f in (f_manifest, f_windows):
                 f.unlink(missing_ok=True)
             if vpu_dir.exists():
@@ -153,9 +153,9 @@ def main():
         )
         print(f"  manifest: {len(manifest):,} events resolved to upstream catchments")
 
-        divide_ids = event_catchment_windows["divide_id"].unique()
+        divide_ids = event_catchment_windows['divide_id'].unique()
         cm4326 = catchments_master[
-            catchments_master["divide_id"].isin(divide_ids)
+            catchments_master['divide_id'].isin(divide_ids)
         ].to_crs(4326)
         minx, miny, maxx, maxy = cm4326.total_bounds
         bbox = (
@@ -166,14 +166,14 @@ def main():
         )
 
         manifest = manifest.assign(
-            grid_start=manifest["win_start"].dt.floor("2min"),
-            grid_end=manifest["win_end"].dt.ceil("2min"),
+            grid_start=manifest['win_start'].dt.floor('2min'),
+            grid_end=manifest['win_end'].dt.ceil('2min'),
         )
         times = pd.DatetimeIndex(
             sorted(
                 set().union(
                     *[
-                        set(pd.date_range(r.grid_start, r.grid_end, freq="2min"))
+                        set(pd.date_range(r.grid_start, r.grid_end, freq='2min'))
                         for r in manifest.itertuples()
                     ],
                 ),
@@ -201,12 +201,12 @@ def main():
         )
         print(f"  fractional crosswalk: {len(frac_cw):,} cell/catchment pairs")
 
-        part_nc = vpu_dir / "mrms_15min_part.nc"
+        part_nc = vpu_dir / 'mrms_15min_part.nc'
         extract_all(
             manifest,
             event_catchment_windows,
             frac_cw,
-            vpu_dir / "shards",
+            vpu_dir / 'shards',
             part_nc,
             max_steps=max_steps,
         )
@@ -221,5 +221,5 @@ def main():
         )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

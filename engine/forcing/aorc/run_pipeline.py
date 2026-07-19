@@ -12,7 +12,6 @@ Edit the CONFIG block at the top of this file to set all options. Run with:
 """
 
 import shutil
-from pathlib import Path
 
 import pandas as pd
 
@@ -26,47 +25,44 @@ from flash_preprocess.aorc import (
 )
 
 
-# CONFIG --------------------------------------------------------------------- #
-EVENTS_CSV = Path("/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv")
-EVENT_IDS = None  # None -> all events in EVENTS_CSV; else e.g. [1266, 4703]
+# CONFIG -------------------------- #
+# Flash flood event registry.
+#   None = all events in EVENTS_CSV; else e.g. [1266, 4703]
+EVENT_PATH = "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/events.csv"
+EVENT_IDS = None
 
-# VPUs to process in this runtime. None -> every VPU present in EVENTS_CSV, all
-# in this one run, auto-merged into OUT_*_NC at the end. A list, e.g. ["03N"],
-# restricts this run to just those VPUs and writes part-files per VPU under
-# CACHE_DIR/aorc_runs/<vpu>/ -- run separate invocations with disjoint
-# VPU_SUBSETs (e.g. on different machines) to split the S3 fetch, then merge
-# every part with merge_hr_parts/merge_15min_parts once they're all done.
+# VPUs to process in this runtime.
+#   None = every VPU in EVENTS_CSV; else e.g. [ "01", "03N"],
+#   Merge with forcing/mrms/merge.py
 VPU_SUBSET = None
 
-# Same CACHE_DIR as engine/forcing/mrms/run_pipeline.py -- both pipelines
-# call the identical build_manifest(), so keeping this in sync means the
-# second pipeline you run reuses the first one's cached per-VPU windows
-# instead of redoing the upstream-catchment BFS.
-CACHE_DIR = Path("/projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess/neuse")
-OUT_HR_NC = Path("/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_hr.nc")
-OUT_15MIN_NC = Path(
-    "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_15min.nc",
-)
+# Where to cache per-VPU AORC windows, weights, and NetCDF shards.
+CACHE_DIR = "/projects/mhpi/leoglonz/sub_hourly/data/_mrms_preprocess/neuse"
 
-MAX_WORKERS = 16  # parallel workers for exactextract area-weight computation
+# Output NetCDF paths for 1) merged hourly and 2) 15-min AORC forcing.
+OUT_HR_NC = "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_hr.nc"
+OUT_15MIN_NC = "/projects/mhpi/leoglonz/sub_hourly/data/upper_neuse_usgs/aorc_15min.nc"
 
-# Total width of each event's forcing window, in days -- must match the
-# WINDOW_DAYS used for the MRMS run this is meant to align with (both feed
-# build_manifest(), and merge_15min.py joins the two outputs by event_id).
+# More workers == faster. Make sure you have enough CPUs (=workers) and RAM.
+MAX_WORKERS = 16
+
+# Total width of each event's forcing window (days), centered on event.
+# Must match WINDOW_DAYS used for MRMS run.
 WINDOW_DAYS = 6.0
 
-# 'midpoint' -- window centered on the mean of BEGIN_DATE_TIME/END_DATE_TIME.
-# 'peak' -- window centered on the event's peak_time column instead.
-CENTROID = "peak"
+# Event window centroid method.
+#   'midpoint' -- center between begin and end times.
+#   'peak' (Recommended) -- window centered on the event's reported peak time.
+CENTROID = 'peak'
 
-# Hourly warmup window preceding each event's WINDOW_DAYS window.
+# Hourly warmup window (days) preceding each event's WINDOW_DAYS window.
 ANTECEDENT_DAYS = 30.0
 
-# True -> ignore cached per-VPU windows/weights/shards and rebuild from
-# scratch for every VPU in this run. Does NOT touch the hydrofabric cache.
-# Needed after any change to WINDOW_DAYS/CENTROID/ANTECEDENT_DAYS.
+# Caching
+#   True -- ignore cached per-VPU windows/weights/shards and rebuild.
+#   Needed after any change to WINDOW_DAYS/CENTROID/ANTECEDENT_DAYS.
 FRESH_START = False
-# ---------------------------------------------------------------------------- #
+# -------------------------- #
 
 
 def main():
@@ -74,13 +70,13 @@ def main():
     catchments_master, *_ = load_hydrofabric(CACHE_DIR)
     print(f"hydrofabric: {len(catchments_master):,} catchments")
 
-    events = pd.read_csv(EVENTS_CSV, dtype={"STAID": str})
+    events = pd.read_csv(EVENT_PATH, dtype={'STAID': str})
     if EVENT_IDS is not None:
-        events = events[events["event_id"].isin(EVENT_IDS)]
+        events = events[events['event_id'].isin(EVENT_IDS)]
 
-    cat_vpu = catchments_master.set_index("divide_id")["vpuid"]
-    events = events.assign(vpuid=events["gage_cat-id"].map(cat_vpu))
-    vpus = sorted(events["vpuid"].dropna().unique())
+    cat_vpu = catchments_master.set_index('divide_id')['vpuid']
+    events = events.assign(vpuid=events['gage_cat-id'].map(cat_vpu))
+    vpus = sorted(events['vpuid'].dropna().unique())
     if VPU_SUBSET is not None:
         vpus = [v for v in vpus if v in VPU_SUBSET]
     print(f"events: {len(events):,} across {len(vpus)} VPU(s): {vpus}")
@@ -95,11 +91,11 @@ def main():
     hr_parts, min15_parts = [], []
     for vpu in vpus:
         print(f"\n=== VPU {vpu} ===")
-        vpu_events = events[events["vpuid"] == vpu]
-        vpu_dir = CACHE_DIR / "aorc_runs" / vpu
+        vpu_events = events[events['vpuid'] == vpu]
+        vpu_dir = CACHE_DIR / 'aorc_runs' / vpu
 
         if FRESH_START:
-            f_weights = CACHE_DIR / f"aorc_weights_{vpu}.pkl"
+            f_weights = CACHE_DIR / f'aorc_weights_{vpu}.pkl'
             f_weights.unlink(missing_ok=True)
             if vpu_dir.exists():
                 shutil.rmtree(vpu_dir)
@@ -115,10 +111,10 @@ def main():
         print(f"  manifest: {len(manifest):,} events resolved to upstream catchments")
 
         divide_id_of = dict(
-            zip(vpu_events["event_id"].astype(str), vpu_events["gage_cat-id"]),
+            zip(vpu_events['event_id'].astype(str), vpu_events['gage_cat-id']),
         )
 
-        divide_ids = event_catchment_windows["divide_id"].unique()
+        divide_ids = event_catchment_windows['divide_id'].unique()
         weight_idx = build_weighted_crosswalk(
             divide_ids,
             catchments_master,
@@ -130,12 +126,12 @@ def main():
 
         build_shards(manifest, weight_idx, vpu_dir, antecedent_days=ANTECEDENT_DAYS)
 
-        hr_part = vpu_dir / "aorc_hr_part.nc"
-        min15_part = vpu_dir / "aorc_15min_part.nc"
+        hr_part = vpu_dir / 'aorc_hr_part.nc'
+        min15_part = vpu_dir / 'aorc_15min_part.nc'
         extract_all(
             manifest,
             weight_idx,
-            vpu_dir / "shards",
+            vpu_dir / 'shards',
             hr_part,
             min15_part,
             divide_id_of,
@@ -153,5 +149,5 @@ def main():
         print("Run other VPU subsets separately, then merge remaining parts together.")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
