@@ -1,28 +1,4 @@
-r"""Convert a long-format USGS discharge CSV to an event-indexed NetCDF.
-
-The output mirrors the shape of ``forcing_15min.nc`` so the flash-hydro loader
-can read streamflow directly from NetCDF instead of re-parsing CSV on every
-training step.
-
-Input CSV columns (long format):
-    STAID, site_name, datetime, discharge_cfs, latitude, longitude
-
-Output NC structure
--------------------
-  Dimensions:
-    event     - number of storm events (same order as forcing_15min.nc)
-    time_step - maximum 15-min steps per event
-    gauge     - number of USGS gauges present in the CSV
-
-  Coordinates:
-    event_id  (event,)  str  shared event ID (copied from forcing NC)
-    gauge_id  (gauge,)  str  zero-padded 8-digit STAID
-    ts_start  (event,)  f64  minutes since 1970-01-01 00:00:00 UTC
-    ts_end    (event,)  f64  minutes since 1970-01-01 00:00:00 UTC
-
-  Variables:
-    streamflow (event, time_step, gauge)  f32  [cfs]
-      Values outside the valid n_steps window are filled with NaN.
+r"""Convert a USGS discharge CSV to an event-indexed NetCDF.
 
 Usage
 -----
